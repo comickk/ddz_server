@@ -15,7 +15,8 @@ import (
 //Player向Room转递过来的消息
 type Relay struct {
 	pos int
-	msg map[string]interface{}
+	msg Packet
+	//msg map[string]interface{}
 }
 
 //玩家位置:      ua      uc
@@ -27,27 +28,57 @@ type Relay struct {
 
 //游戏房间
 type Room struct {
-	roomid string     //roomid
-	ua     *Player    //玩家A
-	ub     *Player    //玩家B
-	uc     *Player    //玩家C
-	rmsg   chan Relay //通过Player中继过来的消息,有些消息在Player里处理，有些需要在Room中处理
+	roomid   string     //roomid
+	roomtype int        //房间类型
+	ua       *Player    //玩家A
+	ub       *Player    //玩家B
+	uc       *Player    //玩家C
+	rmsg     chan Relay //通过Player中继过来的消息,有些消息在Player里处理，有些需要在Room中处理
 	//readycout   int        // 准备好的用户个数，当为3时，服务器开始发牌
-	verifycount   int       //发牌校验，当三个玩家都发来校验信息后，开始叫地主
-	notcalllocout int       //不叫地主的玩家个数，如果为3，服务器重新发牌
-	grabcount     int       //进行抢地主玩家的个数，抢和不抢的都记录
-	firstcaller   int       //第一个叫地主的玩家
-	firstgraber   int       //第一个抢地主的玩家
-	backcards     [3]int    //底牌
-	precards      []int     //上一个人出的牌
-	propos        int       //用于记录上一个出牌的玩家
-	stop          chan byte //关闭信号
+
+	//-----------
+	mul      Mul //倍数
+	mulstate int //加倍状态,计数,三人都加完倍后,进行下一步操作
+
+	firstmingpai int //第一个明牌玩家位置
+	landlord     int //地主位置
+
+	spring int //春天   //0初始  1 地主春天  2 农民春天  3 没有春天
+	//----------------
+
+	verifycount int //发牌校验，当三个玩家都发来校验信息后，开始叫地主
+
+	backcards [3]int    //底牌
+	precards  []int     //上一个人出的牌
+	propos    int       //用于记录上一个出牌的玩家
+	stop      chan byte //关闭信号
+
+	nextplayer int         //下一个说话的玩家
+	waittimer  *time.Timer //等待下个说话玩家的计时器
+
+	isplaying bool //游戏运行标志,用于判断是否为逃跑
 }
 
-func NewRoom(ua, ub, uc *Player) *Room {
-	return &Room{roomid: lib.NewObjectId(), ua: ua, ub: ub, uc: uc, rmsg: make(chan Relay),
-		verifycount: 0, notcalllocout: 0, grabcount: 0, firstcaller: 0, firstgraber: 0, propos: 0,
-		stop: make(chan byte, 1)}
+type Mul struct {
+	// 倍数情况
+	Init   int //  -- init: 初始倍数
+	Vc     int //  -- vc: 明牌倍数
+	Grab   int //  -- grab: 抢地主倍数
+	Bc     int //  -- bc: 底牌倍数
+	Bomb   int //  -- bomb: 炸弹倍数
+	Spring int //  -- spring: 春天倍数
+	Lo     int //-- lo: 地主倍数
+	U1     int //  -- u1 用户1农民倍数
+	U2     int //  -- u2 用户2农民情况
+	U3     int //  -- u3 用户3农民情况
+}
+
+func NewRoom(ua, ub, uc *Player, rt int) *Room {
+	onlinenum[rt] += 3
+	mul := Mul{Init: 1, Vc: 1, Grab: 1, Bc: 1, Bomb: 1, Spring: 1, Lo: 1, U1: 1, U2: 1, U3: 1}
+	return &Room{roomid: lib.NewObjectId(), roomtype: rt, ua: ua, ub: ub, uc: uc, rmsg: make(chan Relay), mul: mul,
+		verifycount: 0, firstmingpai: 0, landlord: 0, propos: 0, spring: 0, nextplayer: 0, waittimer: nil,
+		mulstate: 0, isplaying: false, stop: make(chan byte, 1)}
 }
 func (this *Room) Run() {
 	go func() {
@@ -56,12 +87,15 @@ func (this *Room) Run() {
 		for {
 			select {
 			case <-this.stop:
+				fmt.Println("---房间已关闭---")
 				return
 			//Player中继过来了消息
 			case rg, ok := <-this.rmsg:
 				if ok {
-					if cmd, ok := rg.msg["cmd"].(string); ok {
-						switch cmd {
+					fmt.Printf("房间处理数据 <---  %s \n", rg.msg.Id)
+					//if cmd, ok := rg.msg["cmd"].(string); ok {
+					if rg.msg.Id > 0 {
+						switch rg.msg.Id {
 						/* 该消息在player里处理，修改为userready时，玩家加入匹配队列
 						//用户准备开始游戏
 						case "userready":
@@ -72,97 +106,102 @@ func (this *Room) Run() {
 							}*/
 
 						//发牌验证
-						case "verifycards":
+						case 0001: //"verifycards":
 							this.verifycount++
 							if this.verifycount == 3 {
 								//三个玩家都发来了验证消息，开始叫地主
 								this.sendFirstCaller()
 							}
 
-						//叫地主
-						case "calllandlord":
-							if cv, ok := rg.msg["call"].(float64); ok {
-								iscall := int(cv)
-
-								if iscall == 0 {
-									this.notcalllocout++
-								} else {
-									if this.firstcaller == 0 {
-										//记下第一个叫地主的玩家
-										this.firstcaller = rg.pos
-									}
+						case 1031:
+							//DisplayPoker: {sendId: 1031, msg: "send_DisplayPoker"},// 明牌
+							//data {"mul":倍数}
+							if data, ok := rg.msg.Data.(map[string]interface{}); ok {
+								if mul, ok := data["mul"].(float64); ok {
+									this.DisplayPoker(rg.pos, (int)(mul))
 								}
+							}
 
-								//三个玩家都未叫地主
-								if this.notcalllocout == 3 {
-									//房间重置
-									this.ResetRoom()
-									//服务器从新发牌
-									this.dealCards(1)
-								} else if this.notcalllocout == 2 && this.firstcaller != 0 {
-									//两个不叫一个叫的，可以直接确定地主
-									this.firstgraber = this.firstcaller
-									this.sendLandlordOwer()
-								} else {
+						case 1032:
+							//SendPokerOver: {sendId: 1032, msg: "send_SendPokerOver"},// 发完牌之后校验
+							//分配第一个叫地主的玩家
+							this.verifycount++
+							if this.verifycount >= 3 {
+								// if this.waittimer != nil {
+								// 	this.waittimer.Stop()
+								// }
+								this.sendFirstCaller()
+							}
+						//ShoutPoker: {recvId: 2035, msg: "recv_ShoutPoker"},// 叫牌
+
+						//叫地主
+						case 1033: //"calllandlord":
+							//ShoutLandlord: {sendId: 1033, msg: "send_ShoutLandlord"},// 叫地主
+							//{"id":1033,"msg":"send_ShoutLandlord","data":0}
+
+							if rg.pos == this.nextplayer {
+								// if this.waittimer != nil {
+								// 	this.waittimer.Stop()
+								// }
+								if cv, ok := rg.msg.Data.(float64); ok {
+									iscall := int(cv)
 									this.callLandlord(rg.pos, int(iscall))
 								}
-
 							} else {
-								logs.Error("calllandlord call param error")
+								logs.Error("player %d  is not  next player", rg.pos)
 							}
 
 						//抢地主
-						case "grablandlord":
-							if cv, ok := rg.msg["grab"].(float64); ok {
-								this.grabcount++
-								isgrab := int(cv)
-
-								//记下第一个抢地主的人
-								if isgrab == 1 && this.firstgraber == 0 {
-									this.firstgraber = rg.pos
-								}
-
-								//如果叫地主的人也抢地主,地主是叫地主的玩家
-								if isgrab == 1 && this.firstcaller == rg.pos {
-									this.firstgraber = this.firstcaller
-
-								}
-
-								//其余两个玩家没有抢地主,地主是叫地主的玩家
-								if this.firstgraber == 0 && this.grabcount == 2 {
-									this.firstgraber = this.firstcaller
-
-								}
-
-								if this.grabcount+this.notcalllocout == 3 {
-									//亮底牌，通知谁是地主
-									this.sendLandlordOwer()
-								} else {
-									//抢地主
+						case 1034: //"grablandlord":
+							//RobLandlord: {sendId: 1034, msg: "send_RobLandlord"},// 抢地主
+							if rg.pos == this.nextplayer {
+								// if this.waittimer != nil {
+								// 	this.waittimer.Stop()
+								// }
+								if cv, ok := rg.msg.Data.(float64); ok {
+									isgrab := int(cv)
 									this.grabLandlord(rg.pos, isgrab)
 								}
-
 							} else {
-								logs.Error("grablandlord call param error")
+								logs.Error("player %d  is not  next player", rg.pos)
+							}
+
+						case 1035: //{"id":1035,"msg":"send_ShoutDouble","data":0/1/2} //加倍
+
+							if mul, ok := rg.msg.Data.(float64); ok {
+								this.ShoutDouble(rg.pos, (int)(mul))
 							}
 
 						//出牌
-						case "popcards":
+						case 1036:
+							//PutPoker: {sendId: 1036, msg: "send_PutPoker"},// 出牌
+							//ex {"id":1036,"msg":"send_PutPoker","data":[305,205,105,404]}
 
-							if cv, ok := rg.msg["cards"].([]interface{}); ok {
-								this.PopCards(rg.pos, cv)
+							if rg.pos == this.nextplayer {
+								// if this.waittimer != nil {
+								// 	this.waittimer.Stop()
+								// }
+								if cv, ok := rg.msg.Data.([]interface{}); ok {
+									this.PopCards(rg.pos, cv)
+								} else {
+									logs.Error("put poker card value param error")
+								}
+							} else {
+								logs.Error("player %d  is not  next player", rg.pos)
 							}
 
 						//离开房间
-						case "leaveroom":
+						case 1022: //"leaveroom":
 							this.LeaveRoom(rg.pos)
 
 						//固定消息聊天
-						case "chat":
-							if id, ok := rg.msg["id"].(float64); ok {
-								this.Chat(rg.pos, int(id))
+						case 1061:
+							// Chat: {sendId: 1061, msg: "send_Chat"},// 聊天
+							if data, ok := rg.msg.Data.(map[string]interface{}); ok {
+								if id, ok := data["id"].(float64); ok {
+									this.Chat(rg.pos, (int)(id))
+								}
 							}
-
 						}
 
 					} else {
@@ -174,63 +213,100 @@ func (this *Room) Run() {
 	}()
 }
 
-//快速匹配后向玩家推送匹配的玩家
-func (this *Room) sendMatchPlayer() {
-	//向三个玩家推送匹配的用户
-	res := make(map[string]interface{})
-	res["cmd"] = "matcher"
-	res["err"] = ""
-	res["room"] = this.roomid
+//将要发送的数据打包成客户端一样的格式
+func (this *Room) packData(order int64, code string, res *map[string]interface{}) []byte {
+	msg := make(map[string]interface{})
+	msg["order"] = order
+	msg["code"] = code
+	msg["data"] = res
 
-	//向ua推送,左侧是uc,右侧是ub
-	wr := fmt.Sprintf("%.1f/%%", float32(this.uc.user.Wn)/float32(this.uc.user.Ct)*100)
-	res["u1"] = map[string]interface{}{"name": this.uc.user.Nickname, "up": this.uc.user.Up,
-		"ct": this.uc.user.Ct, "wr": wr, "isr": 0, "img": this.uc.user.Img}
+	data, err := json.Marshal(&msg)
+	if err != nil {
+		logs.Error("json marshal error:%s", err.Error())
+		return nil
+	}
+	return data
+}
 
-	wr = fmt.Sprintf("%.1f/%%", float32(this.ub.user.Wn)/float32(this.ub.user.Ct)*100)
-	res["u2"] = map[string]interface{}{"name": this.ub.user.Nickname, "up": this.ub.user.Up,
-		"ct": this.ub.user.Ct, "wr": wr, "isr": 0, "img": this.ub.user.Img}
+func (this *Room) SendToRoom(order int64, code string, res *map[string]interface{}) {
+	msg := make(map[string]interface{})
+	msg["order"] = order
+	msg["code"] = code
+	msg["data"] = res
 
-	data, err := json.Marshal(&res)
+	data, err := json.Marshal(&msg)
 	if err != nil {
 		logs.Error("json marshal error:%s", err.Error())
 	}
+
 	this.ua.send <- data
+	this.ub.send <- data
+	this.uc.send <- data
+}
+
+//快速匹配后向玩家推送匹配的玩家
+func (this *Room) sendMatchPlayer() {
+	//向三个玩家推送匹配的用户
+	//DeskEnterUser: {recvId: 2031, msg: "recv_DeskEnterUser"},//牌桌匹配到用户
+
+	code := "0"
+	res := make(map[string]interface{})
+	//res["room"] = this.roomid
+	res["room"] = this.roomtype
+
+	//向ua推送,左侧是uc,右侧是ub
+	wr := fmt.Sprintf("%.1f/%%", float32(this.uc.user.Wn)/float32(this.uc.user.Ct)*100)
+	res["u1"] = map[string]interface{}{"name": this.uc.user.Nickname,
+		"up":   this.uc.user.Up,
+		"ct":   this.uc.user.Ct,
+		"wr":   wr,
+		"cw":   this.uc.user.Cw,
+		"isr":  1,
+		"img":  this.uc.user.Img, //------------
+		"pos":  this.uc.pos,      //------------------------
+		"head": this.uc.user.Headimgurl}
+
+	wr = fmt.Sprintf("%.1f/%%", float32(this.ub.user.Wn)/float32(this.ub.user.Ct)*100)
+	res["u2"] = map[string]interface{}{"name": this.ub.user.Nickname,
+		"up":   this.ub.user.Up,
+		"ct":   this.ub.user.Ct,
+		"wr":   wr,
+		"cw":   this.ub.user.Cw,
+		"isr":  1,
+		"img":  this.ub.user.Img,
+		"pos":  this.ub.pos, //-----------------------------
+		"head": this.ub.user.Headimgurl}
+
+	//this.SendToRoom(2031, code, &res)
+	this.ua.send <- this.packData(2031, code, &res)
 
 	//向ub推送,左侧是ua,右侧是uc
 	wr = fmt.Sprintf("%.1f/%%", float32(this.ua.user.Wn)/float32(this.ua.user.Ct)*100)
 	res["u1"] = map[string]interface{}{"name": this.ua.user.Nickname, "up": this.ua.user.Up,
-		"ct": this.ua.user.Ct, "wr": wr, "isr": 0, "img": this.ua.user.Img}
+		"ct": this.ua.user.Ct, "wr": wr, "cw": this.ua.user.Cw, "isr": 0, "img": this.ua.user.Img, "pos": this.ua.pos, "head": this.ua.user.Headimgurl}
 
 	wr = fmt.Sprintf("%.1f/%%", float32(this.uc.user.Wn)/float32(this.uc.user.Ct)*100)
 	res["u2"] = map[string]interface{}{"name": this.uc.user.Nickname, "up": this.uc.user.Up,
-		"ct": this.uc.user.Ct, "wr": wr, "isr": 0, "img": this.uc.user.Img}
+		"ct": this.uc.user.Ct, "wr": wr, "cw": this.uc.user.Cw, "isr": 0, "img": this.uc.user.Img, "pos": this.uc.pos, "head": this.uc.user.Headimgurl}
 
-	data, err = json.Marshal(&res)
-	if err != nil {
-		logs.Error("json marshal error:%s", err.Error())
-	}
-	this.ub.send <- data
+	this.ub.send <- this.packData(2031, code, &res)
 
 	//向uc推送,左侧是ub,右侧是ua
 	wr = fmt.Sprintf("%.1f/%%", float32(this.ub.user.Wn)/float32(this.ub.user.Ct)*100)
 	res["u1"] = map[string]interface{}{"name": this.ub.user.Nickname, "up": this.ub.user.Up,
-		"ct": this.ub.user.Ct, "wr": wr, "isr": 0, "img": this.ub.user.Img}
+		"ct": this.ub.user.Ct, "wr": wr, "cw": this.ub.user.Cw, "isr": 0, "img": this.ub.user.Img, "pos": this.ub.pos, "head": this.ub.user.Headimgurl}
 
 	wr = fmt.Sprintf("%.1f/%%", float32(this.ua.user.Wn)/float32(this.ua.user.Ct)*100)
 	res["u2"] = map[string]interface{}{"name": this.ua.user.Nickname, "up": this.ua.user.Up,
-		"ct": this.ua.user.Ct, "wr": wr, "isr": 0, "img": this.ua.user.Img}
-	data, err = json.Marshal(&res)
-	if err != nil {
-		logs.Error("json marshal error:%s", err.Error())
-	}
-	this.uc.send <- data
+		"ct": this.ua.user.Ct, "wr": wr, "cw": this.ua.user.Cw, "isr": 0, "img": this.ua.user.Img, "pos": this.ua.pos, "head": this.ua.user.Headimgurl}
+
+	this.uc.send <- this.packData(2031, code, &res)
 
 	//开始发牌
 	this.dealCards(0)
 }
 
-//某个玩家准备好了, 1为左侧用户，2为右侧用户，3为自己
+//某个玩家准备好了, 1为左侧用户，2为右侧用户，3为自己 (已废,不用准备,匹配到三名玩家后直接开始)
 func (this *Room) userReady(pos int) {
 	var res string
 	res = `{"cmd":"userready","err":"",user":`
@@ -271,45 +347,97 @@ func (this *Room) userReady(pos int) {
 		ret = fmt.Sprintf("%s%d}", res, 3)
 		this.uc.send <- []byte(ret)
 	}
+
 }
 
 //三个玩家都准备好了，服务器发牌
 //again 是否是从发的牌
 func (this *Room) dealCards(again int) {
+
+	//{num: 进行局数,用于钻场,金币场不需要,}
+	//
+	// SendPoker: {recvId: 2032, msg: "recv_SendPoker"},// 发牌
+	//ReSendPoker: {recvId: 2042, msg: "recv_ReSendPoker"},// 重新发牌
+	msg := make(map[string]interface{})
+
+	mi := 1 //初始倍数
+	if again == 0 {
+		msg["order"] = "2032"
+
+		cfg := model.GetDetialCfg(this.roomtype)
+		//扣除门票
+		ticket := cfg.Ticket
+		mi = cfg.Initmul
+		this.mul.Init = mi
+		this.ua.user.Up -= ticket
+		this.ub.user.Up -= ticket
+		this.uc.user.Up -= ticket
+
+		this.isplaying = true //游戏开始了,此后再退出 视为 逃跑
+
+		//更新数据库
+		//--------------------
+	} else {
+		msg["order"] = "2042"
+	}
+	msg["code"] = "0"
+
+	//{"order":  ,"code":,"data":{"u1":,"u2":,"u3":,"type":,"up":{}}}
+
+	up := make(map[string]interface{})
 	cards := gamerule.GenRandCards()
 	//每个人17张，留三张作为底牌
 	res := make(map[string]interface{})
+	res["type"] = "1"
 
-	res["cmd"] = "dealcards"
-	res["err"] = ""
-	res["again"] = again
+	res["num"] = 0
 	res["u1"] = cards[0:0]
 	res["u2"] = cards[0:0]
 
-	//向ua发牌
+	m := make(map[string]interface{})
+	m["init"] = mi
+	res["mul"] = m
 
+	//向ua发牌----------------------------------
 	this.ua.cards = cards[0:17]
 	res["u3"] = cards[0:17]
-	data, err := json.Marshal(&res)
+
+	up["u1"] = this.uc.user.Up
+	up["u2"] = this.ub.user.Up
+	up["u3"] = this.ua.user.Up
+	res["up"] = up
+	msg["data"] = res
+	data, err := json.Marshal(&msg)
 	if err != nil {
 		logs.Error("json marshal error:%s", err.Error())
 	}
 	this.ua.send <- data
 
-	//向ub发牌
+	//向ub发牌--------------------------------
 	this.ub.cards = cards[17:34]
 	res["u3"] = cards[17:34]
-	data, err = json.Marshal(&res)
+
+	up["u1"] = this.ua.user.Up
+	up["u2"] = this.uc.user.Up
+	up["u3"] = this.ub.user.Up
+	res["up"] = up
+	msg["data"] = res
+	data, err = json.Marshal(&msg)
 	if err != nil {
 		logs.Error("json marshal error:%s", err.Error())
 	}
 	this.ub.send <- data
 
-	//向uc发牌
-
+	//向uc发牌------------------------------
 	this.uc.cards = cards[34:51]
 	res["u3"] = cards[34:51]
-	data, err = json.Marshal(&res)
+
+	up["u1"] = this.ub.user.Up
+	up["u2"] = this.ua.user.Up
+	up["u3"] = this.uc.user.Up
+	res["up"] = up
+	msg["data"] = res
+	data, err = json.Marshal(&msg)
 	if err != nil {
 		logs.Error("json marshal error:%s", err.Error())
 	}
@@ -319,476 +447,291 @@ func (this *Room) dealCards(again int) {
 	this.backcards[0] = cards[51]
 	this.backcards[1] = cards[52]
 	this.backcards[2] = cards[53]
+
+	//是否有人明牌开始
+	if this.ua.isvcstart {
+		this.DisplayPoker(this.ua.pos, 5)
+	}
+	if this.ub.isvcstart {
+		this.DisplayPoker(this.ub.pos, 5)
+	}
+	if this.uc.isvcstart {
+		this.DisplayPoker(this.uc.pos, 5)
+	}
+
+	//超时处理
+	//this.waittimer = time.AfterFunc(time.Second*dealcard, this.sendFirstCaller)
 }
 
-//服务器随机第一个叫地主的玩家
+//玩家明牌
+func (this *Room) DisplayPoker(pos, mul int) {
+	//type 1,2,3,4 card:    user 坐位 1左  2 右  3自己
+	// data = {type:1,user: 2, mul:1,card: [107, 207, 307, 407, 108, 208, 308, 408, 206]};
+	//DisplayPoker: {recvId: 2033, msg: "recv_DisplayPoker"},// 明牌
+
+	if this.firstmingpai == 0 {
+		this.firstmingpai = pos
+	}
+
+	this.mul.Vc *= mul
+
+	code := "0"
+	var res = make(map[string]interface{})
+	res["type"] = 1
+
+	var m = make(map[string]interface{})
+	m["vc"] = this.mul.Vc
+
+	res["mul"] = m
+
+	res["card"] = this.GetPlayer(pos).cards
+	res["user"] = pos
+	this.SendToRoom(2033, code, &res)
+}
+
+//sendFirstCaller  服务器随机第一个叫地主的玩家
 func (this *Room) sendFirstCaller() {
+	//this.verifycount=0
 	rand.Seed(time.Now().Unix())
 	n := rand.Intn(3) + 1
 
-	var res string
-	res = `{"cmd":"caller","err":"","user":`
-	switch n {
-	//选定ua
-	case 1:
-		//向ua发送
-		ret := fmt.Sprintf("%s%d}", res, 3)
-		this.ua.send <- []byte(ret)
-		//向ub发送
-		ret = fmt.Sprintf("%s%d}", res, 1)
-		this.ub.send <- []byte(ret)
-		//向uc发送
-		ret = fmt.Sprintf("%s%d}", res, 2)
-		this.uc.send <- []byte(ret)
-	//选定ub
-	case 2:
-		//向ua发送
-		ret := fmt.Sprintf("%s%d}", res, 2)
-		this.ua.send <- []byte(ret)
-		//向ub发送
-		ret = fmt.Sprintf("%s%d}", res, 3)
-		this.ub.send <- []byte(ret)
-		//向uc发送
-		ret = fmt.Sprintf("%s%d}", res, 1)
-		this.uc.send <- []byte(ret)
-	//选定uc
-	case 3:
-		//向ua发送
-		ret := fmt.Sprintf("%s%d}", res, 1)
-		this.ua.send <- []byte(ret)
-		//向ub发送
-		ret = fmt.Sprintf("%s%d}", res, 2)
-		this.ub.send <- []byte(ret)
-		//向uc发送
-		ret = fmt.Sprintf("%s%d}", res, 3)
-		this.uc.send <- []byte(ret)
+	//有人明牌,明牌玩家先叫
+	if this.firstmingpai > 0 {
+		n = this.firstmingpai
 	}
+
+	this.nextplayer = n
+
+	//this.waittimer = time.AfterFunc(time.Second*shoutLandlord, func() { this.callLandlord(n, 0) })
+
+	var res string
+	//res = `{"cmd":"caller","err":"","user":`
+	res = fmt.Sprintf(`{"order":2035,"code":"0","data":%d}`, n)
+
+	this.ua.send <- []byte(res)
+	this.ub.send <- []byte(res)
+	this.uc.send <- []byte(res)
 }
 
-//玩家叫地主
+// callLandlord  玩家叫地主
 // pos 具体哪个玩家
 // call 该玩家是否叫地主 1 叫 0 不叫
 func (this *Room) callLandlord(pos, call int) {
+	//ShoutLandlord: {recvId: 2036, msg: "recv_ShoutLandlord"},// 叫地主
+	//{order :  , code:  , data: {user:   ,call:   ,nt:  ,ntdo:  }}
+
+	code := "0"
 	var res = make(map[string]interface{})
-	res["cmd"] = "calllandlord"
-	res["err"] = ""
 	res["call"] = call
 
-	//按照顺序应该是ub执行下一步操作
-	if call == 0 {
-		res["ntdo"] = "c"
-	} else {
-		res["ntdo"] = "g"
+	curr := this.GetPlayer(pos)
+	curr.iscall = call
+
+	if call == 1 { //叫
+		this.landlord = pos //确定临时地主位
+		res["ntdo"] = "g"   //进入抢地主阶段
+
+		//查看有抢地主机会的玩家
+
+		if this.ua.iscall > -1 && this.ub.iscall > -1 && this.uc.iscall > -1 { //无抢地主机会
+			this.sendLandlordOwer()
+			return
+		} else {
+			//有抢地主机会时,重置地主 iscall 为-1,使其能反抢一次
+			curr.iscall = -1
+		}
+
+	} else { //未叫
+		res["ntdo"] = "c" //继续叫地主
+
+		//都未叫
+		if this.ua.iscall == 0 && this.ub.iscall == 0 && this.uc.iscall == 0 {
+
+			if this.firstmingpai > 0 { //如有明牌玩家,明牌玩家为地主
+				this.landlord = this.firstmingpai
+				this.sendLandlordOwer()
+				return
+
+			} else { //无明牌玩家 重置牌局
+				this.Reset()
+				this.dealCards(1) //重新发牌
+			}
+		}
 	}
 
-	switch pos {
-	case 1:
-		this.ua.iscall = call
+	next := this.GetNextPlayer(pos)
+	res["user"] = pos    //叫地主的是ua
+	res["nt"] = next.pos //ub执行下一步操作
+	this.SendToRoom(2036, code, &res)
 
-		//向ua发送
-		res["user"] = 3 //叫地主的是ua
-		res["nt"] = 2   //ub执行下一步操作
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.ua.send <- data
-
-		//向ub发送
-		res["user"] = 1 //叫地主的是ua
-		res["nt"] = 3   //ub执行下一步操作
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.ub.send <- data
-
-		//向uc发送
-		res["user"] = 2 //叫地主的是ua
-		res["nt"] = 1   //ub执行下一步操作
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.uc.send <- data
-
-	case 2:
-		this.ub.iscall = call
-
-		//向ua发送
-		res["user"] = 2 //叫地主的是ub
-		res["nt"] = 1   //uc执行下一步操作
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.ua.send <- data
-
-		//向ub发送
-		res["user"] = 3 //叫地主的是ub
-		res["nt"] = 2   //uc执行下一步操作
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.ub.send <- data
-
-		//向uc发送
-		res["user"] = 1 //叫地主的是ub
-		res["nt"] = 3   //uc执行下一步操作
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.uc.send <- data
-
-	case 3:
-		this.uc.iscall = call
-
-		//向ua发送
-		res["user"] = 1 //叫地主的是uc
-		res["nt"] = 3   //ua执行下一步操作
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.ua.send <- data
-
-		//向ub发送
-		res["user"] = 2 //叫地主的是uc
-		res["nt"] = 1   //ua执行下一步操作
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.ub.send <- data
-
-		//向uc发送
-		res["user"] = 3 //叫地主的是uc
-		res["nt"] = 2   //ua执行下一步操作
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-
-		this.uc.send <- data
-
-	}
+	this.nextplayer = next.pos
+	//this.waittimer = time.AfterFunc(time.Second*robLandlord, func() { this.grabLandlord(this.nextplayer, 0) })
 }
 
-//玩家抢地主
+//grabLandlord  玩家抢地主
 // pos 具体哪个玩家
 // grab 该玩家是否抢地主 1 抢 0 不抢
 func (this *Room) grabLandlord(pos, grab int) {
+
+	//RobLandlord: {recvId: 2037, msg: "recv_RobLandlord"},// 抢地主
+
 	var res = make(map[string]interface{})
-	res["cmd"] = "grablandlord"
-	res["err"] = ""
+	code := "0"
 	res["grab"] = grab
 
+	curr := this.GetPlayer(pos)
+	if grab == 1 { //抢地主
+		this.landlord = pos
+		curr.iscall = 1
+		this.mul.Grab *= 2
+	} else { //不抢
+		curr.iscall = 0
+	}
+
+	//取得下一个可抢地主的人
 	n := this.getNextOperator(pos)
-	if n == 0 {
-		//后面没有人抢地主了
+
+	if n == 0 { //没人有抢的机会,确定地主
 		this.sendLandlordOwer()
 		return
 	}
 
-	switch pos {
-	case 1:
-		if this.ua.iscall == 1 {
-			//向ua发送
-			res["user"] = 3 //抢地主的是ua
-			res["nt"] = this.getRelativePos(1, n)
-			data, err := json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.ua.send <- data
-
-			//向ub发送
-			res["user"] = 1 //抢地主的是ua
-			res["nt"] = this.getRelativePos(2, n)
-			data, err = json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.ub.send <- data
-
-			//向uc发送
-			res["user"] = 2 //抢地主的是ua
-			res["nt"] = this.getRelativePos(3, n)
-			data, err = json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.uc.send <- data
-		}
-
-	case 2:
-		if this.ub.iscall == 1 {
-			//向ua发送
-			res["user"] = 2 //抢地主的是ub
-			res["nt"] = this.getRelativePos(1, n)
-			data, err := json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.ua.send <- data
-
-			//向ub发送
-			res["user"] = 3 //抢地主的是ub
-			res["nt"] = this.getRelativePos(2, n)
-			data, err = json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.ub.send <- data
-
-			//向uc发送
-			res["user"] = 1 //抢地主的是ub
-			res["nt"] = this.getRelativePos(3, n)
-			data, err = json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.uc.send <- data
-		}
-	case 3:
-		if this.uc.iscall == 1 {
-			//向ua发送
-			res["user"] = 1 //抢地主的是uc
-			res["nt"] = this.getRelativePos(1, n)
-			data, err := json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.ua.send <- data
-
-			//向ub发送
-			res["user"] = 2 //抢地主的是uc
-			res["nt"] = this.getRelativePos(2, n)
-			data, err = json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.ub.send <- data
-
-			//向uc发送
-			res["user"] = 3 //抢地主的是uc
-			res["nt"] = this.getRelativePos(3, n)
-			data, err = json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			this.uc.send <- data
-		}
-
+	if grab == 0 && n == this.landlord { //没人抢地主,下一个可抢的是地主,确定地主
+		this.sendLandlordOwer()
+		return
 	}
+
+	//还有人能抢,则继续抢地主
+
+	var mul = make(map[string]interface{})
+	mul["grab"] = this.mul.Grab
+	res["mul"] = mul
+
+	res["user"] = pos //抢地主的是
+	res["nt"] = n
+
+	this.SendToRoom(2037, code, &res)
+
+	this.nextplayer = n
+	//this.waittimer = time.AfterFunc(time.Second*robLandlord, func() { this.grabLandlord(this.nextplayer, 0) })
 }
 
-//判断下一步操作的人
+//getNextOperator   判断下一步操作的人
 //返回值 1 ua 2 ub 3 uc 0 没有
 func (this *Room) getNextOperator(pos int) int {
-	var n = 0
-	switch pos {
-	case 1:
-		//判断ua之后该谁
-		if this.ub.iscall == 1 {
-			n = 2
-		} else if this.uc.iscall == 1 {
-			n = 3
+	//var n = 0
+
+	next := this.GetNextPlayer(pos)
+	if next.iscall == -1 {
+		return next.pos
+	} else {
+		next = this.GetNextPlayer(next.pos)
+		if next.iscall == -1 {
+			return next.pos
 		} else {
-			n = 0
-		}
-	case 2:
-		//判断ub之后该谁
-		if this.uc.iscall == 1 {
-			n = 3
-		} else if this.ua.iscall == 1 {
-			n = 1
-		} else {
-			n = 0
-		}
-	case 3:
-		//判断uc之后该谁
-		if this.ua.iscall == 1 {
-			n = 1
-		} else if this.ub.iscall == 1 {
-			n = 2
-		} else {
-			n = 0
+			return 0
 		}
 	}
-	return n
 }
 
-//获取u2相对u1的位置
-//返回值 1 左侧 2 右侧 3 自己
-func (this *Room) getRelativePos(u1, u2 int) int {
-	var n = 3
-	switch u1 {
-	//ua
-	case 1:
-		switch u2 {
-		//ua
-		case 1:
-			n = 3
-			//ub
-		case 2:
-			n = 2
-			//uc
-		case 3:
-			n = 1
-		}
-		//ub
-	case 2:
-		switch u2 {
-		//ua
-		case 1:
-			n = 1
-			//ub
-		case 2:
-			n = 3
-			//uc
-		case 3:
-			n = 2
-		}
-		//uc
-	case 3:
-		switch u2 {
-		//ua
-		case 1:
-			n = 2
-			//ub
-		case 2:
-			n = 1
-			//uc
-		case 3:
-			n = 3
-		}
-	}
-	return n
-}
-
-//亮底牌，通知谁是地主
+//sendLandlordOwer 亮底牌，通知谁是地主
 func (this *Room) sendLandlordOwer() {
+	//EnsureLandlord: {recvId: 2038, msg: "recv_EnsureLandlord"},// 确定地主
 	var res = make(map[string]interface{})
-	res["cmd"] = "landlordower"
-	res["err"] = ""
+	code := "0"
 	res["bc"] = this.backcards
 
-	var lordpos = 0
-	//没有人抢地主，地主是第一个叫地主的玩家
-	if this.firstgraber == 0 {
-		lordpos = this.firstcaller
+	//确定底牌倍数
+	this.mul.Bc = this.GetBackCardMul()
+
+	mul := make(map[string]interface{})
+	mul["bc"] = this.mul.Bc
+	res["mul"] = mul
+
+	var lordpos = this.landlord
+	res["lo"] = lordpos //ua是地主
+
+	this.ua.utype = 2
+	this.ub.utype = 2
+	this.uc.utype = 2
+
+	lord := this.GetPlayer(lordpos)
+	lord.utype = 1
+	lord.cards = append(lord.cards, this.backcards[:]...)
+
+	this.SendToRoom(2038, code, &res)
+
+	//处理确定 地主后  超时操作
+	this.nextplayer = lordpos
+	//处理超时加倍
+	// this.waittimer = time.AfterFunc(time.Second*(double), func() {
+	// 	this.mulstate = 3
+	// 	this.ShoutDouble(0, 0)
+	// })
+	//this.waittimer = time.AfterFunc(time.Second*(double+putCard), func() { this.PopCards(this.nextplayer, this.AutoPutCard(this.nextplayer)) })
+}
+
+//ShoutDouble  玩家加倍
+func (this *Room) ShoutDouble(pos int, mul int) {
+	//return ShoutDouble: {recvId: 2039, msg: "recv_ShoutDouble"},// 加倍
+	//{user   type  ntdo  mul}
+
+	this.mulstate++
+	var res = make(map[string]interface{})
+	code := "0"
+
+	var m = make(map[string]interface{})
+
+	if mul == 0 {
+		res["type"] = 1
 	} else {
-		//地主是第一个抢地主的玩家。注意：如果叫地主的玩家也抢了地主，我们将其记录为firstgraber了
-		lordpos = this.firstgraber
+		res["type"] = 2
 	}
 
-	switch lordpos {
-	case 1:
-		this.ua.utype = 1
-		this.ub.utype = 2
-		this.uc.utype = 2
-		this.ua.cards = append(this.ua.cards, this.backcards[:]...)
+	mul++
+	if this.mulstate >= 3 {
+		// if this.waittimer != nil {
+		// 	this.waittimer.Stop()
+		// }
 
-		//向ua发送
-		res["lo"] = 3 //ua是地主
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ua.send <- data
-
-		//向ub发送
-		res["lo"] = 1 //ua是地主
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ub.send <- data
-
-		//向uc发送
-		res["lo"] = 2 //ua是地主
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.uc.send <- data
-
-	case 2:
-		this.ua.utype = 2
-		this.ub.utype = 1
-		this.uc.utype = 2
-		this.ub.cards = append(this.ub.cards, this.backcards[:]...)
-
-		//向ua发送
-		res["lo"] = 2 //ub是地主
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ua.send <- data
-
-		//向ub发送
-		res["lo"] = 3 //ub是地主
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ub.send <- data
-
-		//向uc发送
-		res["lo"] = 1 //ub是地主
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.uc.send <- data
-	case 3:
-		this.ua.utype = 2
-		this.ub.utype = 2
-		this.uc.utype = 1
-		this.uc.cards = append(this.uc.cards, this.backcards[:]...)
-
-		//向ua发送
-		res["lo"] = 1 //uc是地主
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ua.send <- data
-
-		//向ub发送
-		res["lo"] = 2 //uc是地主
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ub.send <- data
-
-		//向uc发送
-		res["lo"] = 3 //uc是地主
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.uc.send <- data
+		res["ntdo"] = 6
+	} else {
+		res["ntdo"] = 0
 	}
 
+	if pos > 0 {
+		res["user"] = pos //加倍是
+
+		switch pos {
+		case 1:
+			this.mul.U1 = mul
+			m["u1"] = mul
+		case 2:
+			this.mul.U2 = mul
+			m["u2"] = mul
+		case 3:
+			this.mul.U3 = mul
+			m["u3"] = mul
+		}
+		res["mul"] = m
+	}
+
+	this.SendToRoom(2039, code, &res)
+
+	//地主出牌超时处理
+	//this.waittimer = time.AfterFunc(time.Second*putCard, func() { this.PopCards(this.nextplayer, this.AutoPutCard(this.nextplayer)) })
 }
 
 //玩家出牌
 //cv 玩家出的牌
 func (this *Room) PopCards(pos int, cv []interface{}) {
+	//PlayerOutPoker: {recvId: 2040, msg: "recv_PlayerOutPoker"},
+
+	var res = make(map[string]interface{})
+	//{user   card   nt  num 剩余牌数  mul}
+	code := "0"
+
+	var mul = make(map[string]interface{})
 
 	//将[]interface{} 转为 []int
 	cards := make([]int, len(cv))
@@ -796,35 +739,26 @@ func (this *Room) PopCards(pos int, cv []interface{}) {
 		cards[i] = int(v.(float64))
 	}
 
-	if this.propos == pos {
+	//自动出牌标志
+	af := 0
+	curr := this.GetPlayer(pos)
+	if this.propos == pos { //上次出牌的人是自己,此次是重新出牌
 		this.precards = nil
+		af = 0 // 下家自动 出牌 时  直接不出
 	}
 
-	if len(cards) != 0 {
-		this.propos = pos
-	}
+	nt := this.GetNextPlayerPos(pos) //该who出牌
 
-	var res = make(map[string]interface{})
-	res["cmd"] = "popcards"
-	res["err"] = ""
+	pcn := len(cards)
+	if pcn != 0 {
 
-	if len(cards) != 0 {
 		//判断牌类型
 		myType, myValue, myNv := gamerule.GetCardsType(cards)
+
 		if myType == gamerule.ERROR_CARD {
-			res["err"] = "牌类型错误"
-			data, err := json.Marshal(&res)
-			if err != nil {
-				logs.Error("json marshal error:%s", err.Error())
-			}
-			switch pos {
-			case 1:
-				this.ua.send <- data
-			case 2:
-				this.ub.send <- data
-			case 3:
-				this.uc.send <- data
-			}
+			code = "牌类型错误"
+
+			curr.send <- this.packData(2040, code, &res)
 			return
 		} else {
 			//判断是否大于上家出的牌
@@ -834,147 +768,85 @@ func (this *Room) PopCards(pos int, cv []interface{}) {
 
 				if !over {
 					//没有上家的牌大
-					res["err"] = "没有上家的牌大"
-					data, err := json.Marshal(&res)
-					if err != nil {
-						logs.Error("json marshal error:%s", err.Error())
-					}
-					switch pos {
-					case 1:
-						this.ua.send <- data
-					case 2:
-						this.ub.send <- data
-					case 3:
-						this.uc.send <- data
-					}
+					code = "没有上家的牌大"
+					curr.send <- this.packData(2040, code, &res)
 					return
 				}
 			}
 		}
+
+		if myType == gamerule.BOMB_CARD || myType == gamerule.ROCKET_CARD {
+			this.mul.Bomb *= 2
+			mul["bomb"] = this.mul.Bomb
+			res["mul"] = mul
+		}
 	}
 
 	//设置上次玩家出的牌
-	if len(cards) != 0 {
+	if pcn != 0 {
 		this.precards = cards
+
+		if nt == this.propos { //如果上次出牌的人是下一个人
+			af = 1 //此人至少要出一张
+		}
+
+		this.propos = pos
+
+		switch this.spring {
+		case 0:
+			this.spring = 1
+		case 1:
+			if curr.utype == 2 { //非第一手牌时,农民出牌, spring =2
+				this.spring = 2
+			}
+		case 2:
+			if curr.utype == 1 { //非第一手牌时,地主又出牌, spring =3
+				this.spring = 3
+			}
+		}
 	}
 
-	this.precards = cards
-	//通知其他人出牌情况
+	//通知其他人出牌情况-----------------------
 	res["cards"] = cards
 
-	switch pos {
-	case 1:
-		num := len(this.ua.cards) - len(cards)
-		this.ua.cards = gamerule.Difference(this.ua.cards, cards)
-		res["num"] = num
+	hcn := len(curr.cards)
 
-		//ua
-		res["user"] = 3 //ua出的牌
-		res["nt"] = 2   //该ub出牌
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ua.send <- data
+	//num := len(curr.cards) - len(cards) //手中剩余牌数
+	num := hcn - pcn //手中剩余牌数
 
-		//ub
-		res["user"] = 1 //ua出的牌
-		res["nt"] = 3   //该ub出牌
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ub.send <- data
+	//logs.Error("put card  num  error :%d    %d    \n", num, len(curr.cards))
 
-		//uc
-		res["user"] = 2 //ua出的牌
-		res["nt"] = 1   //该ub出牌
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.uc.send <- data
+	fmt.Printf(" put card num: %d  , hand  card  num: %d  ,    %d  ", pcn, hcn, num)
+	if pcn != 0 && num >= hcn {
+		logs.Error("put card  num  error :curr cardnum  %d ,hand card  %d , put  card  %d    \n", num, hcn, pcn)
+	}
 
-		//判断是否出完牌
-		if num == 0 {
-			//结算
-			this.Settlement(pos)
-		}
+	curr.cards = gamerule.Difference(curr.cards, cards)
 
-	case 2:
-		num := len(this.ub.cards) - len(cards)
-		this.ub.cards = gamerule.Difference(this.ub.cards, cards)
-		res["num"] = num
+	res["num"] = num
+	res["user"] = pos //who出的牌
 
-		//ua
-		res["user"] = 2 //ub出的牌
-		res["nt"] = 1   //该uc出牌
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ua.send <- data
+	res["nt"] = nt
 
-		//ub
-		res["user"] = 3 //ub出的牌
-		res["nt"] = 2   //该uc出牌
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ub.send <- data
+	if num == 0 {
+		res["nt"] = 0 //结束出牌
+		this.SendToRoom(2040, code, &res)
 
-		//uc
-		res["user"] = 1 //ub出的牌
-		res["nt"] = 3   //该uc出牌
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.uc.send <- data
+		//结算
+		this.Settlement(pos)
+	} else {
+		this.SendToRoom(2040, code, &res)
 
-		//判断是否出完牌
-		if num == 0 {
-			//结算
-			this.Settlement(pos)
-		}
+		//下一个 的超时处理
+		this.nextplayer = nt
+		if af == 0 {
+			//非第一手牌 不要,
 
-	case 3:
-		num := len(this.uc.cards) - len(cards)
-		this.uc.cards = gamerule.Difference(this.uc.cards, cards)
-		res["num"] = num
+			//this.waittimer = time.AfterFunc(time.Second*putCard, func() { this.PopCards(this.nextplayer, nil) })
 
-		//ua
-		res["user"] = 1 //uc出的牌
-		res["nt"] = 3   //该ua出牌
-		data, err := json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ua.send <- data
-
-		//ub
-		res["user"] = 2 //uc出的牌
-		res["nt"] = 1   //该ua出牌
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.ub.send <- data
-
-		//uc
-		res["user"] = 3 //uc出的牌
-		res["nt"] = 2   //该ua出牌
-		data, err = json.Marshal(&res)
-		if err != nil {
-			logs.Error("json marshal error:%s", err.Error())
-		}
-		this.uc.send <- data
-
-		//判断是否出完牌
-		if num == 0 {
-			//结算
-			this.Settlement(pos)
+		} else {
+			//第一手牌 出一张
+			//this.waittimer = time.AfterFunc(time.Second*putCard, func() { this.PopCards(this.nextplayer, this.AutoPutCard(this.nextplayer)) })
 		}
 	}
 }
@@ -982,77 +854,174 @@ func (this *Room) PopCards(pos int, cv []interface{}) {
 //结算
 // pos 赢的玩家
 func (this *Room) Settlement(pos int) {
+	//GameOver_NormalMatch: {recvId: 2041, msg: "recv_GameOver_NormalMatch"},
+	//{win   u1  u2  u3   reward{ u1 u2  u3}   mul { }  }
+	/*
+				 {     win: 2,// win 胜利的一方 1 地主， 2 农民
+		                reward: {
+		                    u1: 300,
+		                    u2: 600,
+		                    u3: 900,
+		                },
+		                mul: {
+		                    u1: 1,
+		                    u2: 2,
+		                    u3: 3,
+		                },
+		                u1: 9999,  		left
+		                u2: 6666,  	 	right
+		                u3: 7777,    	self
+		            });
+	*/
+
+	winner := this.GetPlayer(pos)
 	var res = make(map[string]interface{})
-	res["cmd"] = "settlement"
-	res["err"] = ""
+	code := "0"
 
 	reward := make(map[string]interface{})
 
 	var rua, rub, ruc int
 
+	//查看春天
+	if this.spring == 1 || this.spring == 2 {
+		this.mul.Spring = 2
+	}
+
+	//取得倍数
+	mul := this.mul.Init * this.mul.Vc * this.mul.Bc * this.mul.Grab * this.mul.Spring * this.mul.Bomb
+	//this.mul.Lo *this.mul.U1 * this.mul.U2 * this.mul.U3
+
+	// Underpoint    int `xorm:"underpoint"`    //底分
+	// Initmul       int `xorm:"initmul"`       //初始倍数
+	// Ticket        int `xorm:"ticket"`        //门票
+	// Maxearn       int `xorm:"maxearn"`       //收益封顶
+
+	cfg := model.GetDetialCfg(this.roomtype)
+	base := cfg.Underpoint
+
 	//计算金币
-	if this.ua.utype == 1 {
-		//ua是地主
-		switch pos {
+	//连胜次数更新
+	if winner.utype == 1 { //地主胜
+		switch winner.pos {
 		case 1:
-			rua = 200
-			rub = -100
-			ruc = -100
+			top := this.ua.user.Up / 2 //计算上限
+			if top > cfg.Maxearn {
+				top = cfg.Maxearn
+			}
+
+			rub = -UpLimit(base*mul*this.mul.U1, this.ub.user.Up, top)
+			ruc = -UpLimit(base*mul*this.mul.U1, this.uc.user.Up, top)
+			rua = 0 - rub - rua
+
+			this.ua.user.Cw += 1
+			this.ub.user.Cw = 0
+			this.uc.user.Cw = 0
+
 		case 2:
-			rua = -200
-			rub = 100
-			ruc = 100
+			top := this.ub.user.Up / 2 //计算上限
+			if top > cfg.Maxearn {
+				top = cfg.Maxearn
+			}
+
+			rua = -UpLimit(base*mul*this.mul.U2, this.ua.user.Up, top)
+			ruc = -UpLimit(base*mul*this.mul.U2, this.uc.user.Up, top)
+			rub = 0 - ruc - rua
+
+			this.ua.user.Cw = 0
+			this.ub.user.Cw += 1
+			this.uc.user.Cw = 0
+
 		case 3:
-			rua = -200
-			rub = 100
-			ruc = 100
+			top := this.uc.user.Up / 2 //计算上限
+			if top > cfg.Maxearn {
+				top = cfg.Maxearn
+			}
+			rua = -UpLimit(base*mul*this.mul.U3, this.ua.user.Up, top)
+			rub = -UpLimit(base*mul*this.mul.U3, this.ub.user.Up, top)
+			ruc = 0 - rub - rua
+
+			this.ua.user.Cw = 0
+			this.ub.user.Cw = 0
+			this.uc.user.Cw += 1
 		}
-	} else if this.ub.utype == 1 {
-		//ub是地主
-		switch pos {
+	} else { //地主负 农民胜
+		//
+		switch this.landlord {
 		case 1:
-			rua = 100
-			rub = -200
-			ruc = 100
+			top := this.ua.user.Up //计算赔付上限
+			if top > cfg.Maxearn*2 {
+				top = cfg.Maxearn
+			}
+			//
+			v := base*mul*this.mul.U2 + base*mul*this.mul.U3
+			losttop := UpLimit(v, this.ub.user.Up+this.uc.user.Up, top)
+
+			if v > losttop { //赔付额不足 平分//按各自倍数比例分配
+				rub = losttop / 2 //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
+				ruc = losttop - ruc
+			} else {
+				rub = UpLimit(base*mul*this.mul.U2, this.ub.user.Up, losttop)
+				ruc = UpLimit(base*mul*this.mul.U3, this.uc.user.Up, losttop)
+			}
+			rua = 0 - rub - ruc
+
+			this.ua.user.Cw = 0
+			this.ub.user.Cw += 1
+			this.uc.user.Cw += 1
+
 		case 2:
-			rua = 200
-			rub = -100
-			ruc = -100
+			top := this.ub.user.Up //计算赔付上限
+			if top > cfg.Maxearn*2 {
+				top = cfg.Maxearn
+			}
+			//
+			v := base*mul*this.mul.U1 + base*mul*this.mul.U3
+			losttop := UpLimit(v, this.ua.user.Up+this.uc.user.Up, top)
+
+			if v > losttop { //赔付额不足 平分//按各自倍数比例分配
+				rua = losttop / 2 //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
+				ruc = losttop - ruc
+			} else {
+				rua = UpLimit(base*mul*this.mul.U1, this.ua.user.Up, losttop)
+				ruc = UpLimit(base*mul*this.mul.U3, this.uc.user.Up, losttop)
+			}
+			rub = 0 - rua - ruc
+
+			this.ua.user.Cw += 1
+			this.ub.user.Cw = 0
+			this.uc.user.Cw += 1
+
 		case 3:
-			rua = 100
-			rub = -200
-			ruc = 100
-		}
-	} else {
-		//uc是地主
-		switch pos {
-		case 1:
-			rua = 100
-			rub = 100
-			ruc = -200
-		case 2:
-			rua = 100
-			rub = 100
-			ruc = -200
-		case 3:
-			rua = -100
-			rub = -100
-			ruc = 200
+			top := this.uc.user.Up //计算赔付上限
+			if top > cfg.Maxearn*2 {
+				top = cfg.Maxearn
+			}
+			//
+			v := base*mul*this.mul.U1 + base*mul*this.mul.U2
+			losttop := UpLimit(v, this.ua.user.Up+this.ub.user.Up, top)
+
+			if v > losttop { //赔付额不足 平分//按各自倍数比例分配
+				rua = losttop / 2 //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
+				rub = losttop - ruc
+			} else {
+				rua = UpLimit(base*mul*this.mul.U1, this.ua.user.Up, losttop)
+				rub = UpLimit(base*mul*this.mul.U2, this.ub.user.Up, losttop)
+			}
+			ruc = 0 - rua - rub
+
+			this.ua.user.Cw += 1
+			this.ub.user.Cw += 1
+			this.uc.user.Cw = 0
 		}
 	}
+
 	this.ua.user.Up += rua
 	this.ub.user.Up += rub
 	this.uc.user.Up += ruc
 
 	//胜利次数
-	switch pos {
-	case 1:
-		this.ua.user.Wn += 1
-	case 2:
-		this.ub.user.Wn += 1
-	case 3:
-		this.uc.user.Wn += 1
-	}
+	winner.user.Wn += 1
+
 	//对局次数
 	this.ua.user.Ct += 1
 	this.ub.user.Ct += 1
@@ -1076,7 +1045,7 @@ func (this *Room) Settlement(pos int) {
 
 	err = model.UpdateUser(this.ub.user.ObjectId, bm)
 	if err != nil {
-		logs.Error("update db error:%s", err.Error())
+		logs.Error("gameover update db error 1:%s", err.Error())
 	}
 	//更新uc
 	bm["up"] = this.uc.user.Up
@@ -1085,201 +1054,420 @@ func (this *Room) Settlement(pos int) {
 
 	err = model.UpdateUser(this.uc.user.ObjectId, bm)
 	if err != nil {
-		logs.Error("update db error:%s", err.Error())
+		logs.Error("gameover update db error 2:%s", err.Error())
 	}
 
-	//发送消息
-	var winer int
-	//通知ua
-	switch pos {
-	case 1:
-		winer = 3
-	case 2:
-		winer = 2
-	case 3:
-		winer = 1
-	}
-	res["win"] = winer
-	reward["u1"] = ruc
-	reward["u2"] = rub
-	reward["u3"] = rua
-	res["reward"] = reward
-	res["c1"] = this.uc.cards
-	res["c2"] = this.ub.cards
-	res["c3"] = this.ua.cards
-	res["u1"] = this.uc.user.Up
-	res["u2"] = this.ub.user.Up
-	res["u3"] = this.ua.user.Up
+	m := make(map[string]interface{})
+	m["spring"] = this.mul.Spring
+	res["mul"] = m
 
-	data, err := json.Marshal(&res)
-	if err != nil {
-		logs.Error("json marshal error:%s", err.Error())
-	}
-	this.ua.send <- data
-
-	//通知ub
-	switch pos {
-	case 1:
-		winer = 1
-	case 2:
-		winer = 3
-	case 3:
-		winer = 2
-	}
-	res["win"] = winer
+	res["win"] = winner.utype
 	reward["u1"] = rua
-	reward["u2"] = ruc
-	reward["u3"] = rub
-	res["reward"] = reward
-	res["c1"] = this.ua.cards
-	res["c2"] = this.uc.cards
-	res["c3"] = this.ub.cards
-	res["u1"] = this.ua.user.Up
-	res["u2"] = this.uc.user.Up
-	res["u3"] = this.ub.user.Up
-
-	data, err = json.Marshal(&res)
-	if err != nil {
-		logs.Error("json marshal error:%s", err.Error())
-	}
-	this.ub.send <- data
-
-	//通知uc
-	switch pos {
-	case 1:
-		winer = 2
-	case 2:
-		winer = 1
-	case 3:
-		winer = 3
-	}
-	res["win"] = winer
-	reward["u1"] = rub
-	reward["u2"] = rua
+	reward["u2"] = rub
 	reward["u3"] = ruc
 	res["reward"] = reward
-	res["c1"] = this.ub.cards
-	res["c2"] = this.ua.cards
+	res["c1"] = this.ua.cards
+	res["c2"] = this.ub.cards
 	res["c3"] = this.uc.cards
-	res["u1"] = this.ub.user.Up
-	res["u2"] = this.ua.user.Up
+	res["u1"] = this.ua.user.Up
+	res["u2"] = this.ub.user.Up
 	res["u3"] = this.uc.user.Up
 
-	data, err = json.Marshal(&res)
-	if err != nil {
-		logs.Error("json marshal error:%s", err.Error())
-	}
-	this.uc.send <- data
+	this.SendToRoom(2041, code, &res)
 
+	this.isplaying = false
 	//房间重置
 	//	this.readycout = 0
 	this.ResetRoom()
 }
 
-//离开房间,目前的策略是其中一个玩家离开，就相当于所有玩家离开
+//离开房间
 func (this *Room) LeaveRoom(pos int) {
-	var res = `{"cmd":"dissolve"}`
+	//{"id":1022,"msg":"send_LeaveHome","data":{}}
+	//LeaveHome: {recvId: 2022, msg: "recv_LeaveHome"}
+
+	if this.isplaying {
+		this.Escape(pos)
+		return
+	}
+	var res string
+	//res = `{"cmd":"caller","err":"","user":`
+	//DeskUserLeave: {recvId: 2043, msg: "recv_DeskUserLeave"},// 用户离开
 
 	switch pos {
 	case 1:
-		//发送给ub
+		this.ua.LeaveRoom()
+		res = `{"order":2043,"code":"0","data":{"user":1}}`
 		this.ub.send <- []byte(res)
-		//发送给uc
+		res = `{"order":2043,"code":"0","data":{"user":2}}`
 		this.uc.send <- []byte(res)
-
 	case 2:
-		//发送给ua
+		this.ub.LeaveRoom()
+		res = `{"order":2043,"code":"0","data":{"user":2}}`
 		this.ua.send <- []byte(res)
-		//发送给uc
+		res = `{"order":2043,"code":"0","data":{"user":1}}`
 		this.uc.send <- []byte(res)
-
 	case 3:
-		//发送给ua
+		this.uc.LeaveRoom()
+		res = `{"order":2043,"code":"0","data":{"user":1}}`
 		this.ua.send <- []byte(res)
-		//发送给ub
+		res = `{"order":2043,"code":"0","data":{"user":2}}`
+		this.ub.send <- []byte(res)
+	}
+}
+
+//玩家逃跑
+func (this *Room) Escape(pos int) {
+	var res string
+	//res = `{"cmd":"caller","err":"","user":`
+	//DeskUserLeave: {recvId: 2043, msg: "recv_DeskUserLeave"},// 用户离开
+
+	p := this.GetPlayer(pos)
+
+	name := p.user.Nickname
+
+	//返还门票
+	ticket := model.GetDetialCfg(this.roomtype).Ticket
+
+	switch pos {
+	case 1:
+		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":1,"escape":"%s","ticket":%d}}`, name, ticket)
+		this.ub.user.Up += ticket
+		this.ub.send <- []byte(res)
+		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":2,"escape":"%s","ticket":%d}}`, name, ticket)
+		this.uc.user.Up += ticket
+		this.uc.send <- []byte(res)
+	case 2:
+		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":2,"escape":"%s","ticket":%d}}`, name, ticket)
+		this.ua.user.Up += ticket
+		this.ua.send <- []byte(res)
+		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":1,"escape":"%s","ticket":%d}}`, name, ticket)
+		this.uc.user.Up += ticket
+		this.uc.send <- []byte(res)
+	case 3:
+		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":1,"escape":"%s","ticket":%d}}`, name, ticket)
+		this.ua.user.Up += ticket
+		this.ua.send <- []byte(res)
+		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":2,"escape":"%s","ticket":%d}}`, name, ticket)
+		this.ub.user.Up += ticket
 		this.ub.send <- []byte(res)
 	}
 
-	this.ua.LeaveRoom()
-	this.ub.LeaveRoom()
-	this.uc.LeaveRoom()
+	//只扣除 逃跑玩家的 门票   保存至数据库
+
+	bm := make(map[string]interface{})
+	bm["up"] = p.user.Up
+	bm["cw"] = 0
+
+	err := model.UpdateUser(p.user.ObjectId, bm)
+	if err != nil {
+		logs.Error("gameover update db error 3:%s", err.Error())
+	}
+
+	this.ua.room = nil
+	this.ub.room = nil
+	this.uc.room = nil
+
 	this.ua = nil
 	this.ub = nil
 	this.uc = nil
-
+	//结束对局
+	onlinenum[this.roomtype] -= 3
 	this.stop <- 1
 }
 
 //固定消息聊天
 func (this *Room) Chat(pos, id int) {
+	//Chat: {recvId: 2061, msg: "recv_Chat"},// 聊天
+	//{id:说的什么,user 谁说的 1左,2右}
+
+	msg := make(map[string]interface{})
+	msg["order"] = "2061"
+	msg["code"] = "0"
+
 	var res = make(map[string]interface{})
-	res["cmd"] = "chat"
-	res["err"] = ""
 	res["id"] = id
 
 	switch pos {
 	case 1:
 		//发送给ub
-		res["user"] = 2
-		data, err := json.Marshal(&res)
+		res["user"] = 1
+		msg["data"] = res
+		data, err := json.Marshal(&msg)
 		if err != nil {
 			logs.Error("json marshal error:%s", err.Error())
 		}
 		this.ub.send <- []byte(data)
 		//发送给uc
-		res["user"] = 1
-		data, err = json.Marshal(&res)
+		res["user"] = 2
+		msg["data"] = res
+		data, err = json.Marshal(&msg)
 		if err != nil {
 			logs.Error("json marshal error:%s", err.Error())
 		}
 		this.uc.send <- []byte(data)
 	case 2:
 		//发送给ua
-		res["user"] = 1
-		data, err := json.Marshal(&res)
+		res["user"] = 2
+		msg["data"] = res
+		data, err := json.Marshal(&msg)
 		if err != nil {
 			logs.Error("json marshal error:%s", err.Error())
 		}
 		this.ua.send <- []byte(data)
 		//发送给uc
-		res["user"] = 2
-		data, err = json.Marshal(&res)
+		res["user"] = 1
+		msg["data"] = res
+		data, err = json.Marshal(&msg)
 		if err != nil {
 			logs.Error("json marshal error:%s", err.Error())
 		}
 		this.uc.send <- []byte(data)
 	case 3:
 		//发送给ua
-		res["user"] = 2
-		data, err := json.Marshal(&res)
+		res["user"] = 1
+		msg["data"] = res
+		data, err := json.Marshal(&msg)
 		if err != nil {
 			logs.Error("json marshal error:%s", err.Error())
 		}
 		this.ua.send <- []byte(data)
 		//发送给ub
-		res["user"] = 1
-		data, err = json.Marshal(&res)
+		res["user"] = 2
+		msg["data"] = res
+		data, err = json.Marshal(&msg)
 		if err != nil {
 			logs.Error("json marshal error:%s", err.Error())
 		}
 		this.ub.send <- []byte(data)
 	}
-
 }
 
-//房间
+//房间 结束房间
 func (this *Room) ResetRoom() {
+
+	var res string
+
+	res = `{"order":2043,"code":"0","data":{"user":2}}`
+	this.ua.send <- []byte(res)
+	res = `{"order":2043,"code":"0","data":{"user":1}}`
+	this.ua.send <- []byte(res)
+
+	res = `{"order":2043,"code":"0","data":{"user":1}}`
+	this.ub.send <- []byte(res)
+	res = `{"order":2043,"code":"0","data":{"user":2}}`
+	this.ub.send <- []byte(res)
+
+	res = `{"order":2043,"code":"0","data":{"user":2}}`
+	this.uc.send <- []byte(res)
+	res = `{"order":2043,"code":"0","data":{"user":1}}`
+	this.uc.send <- []byte(res)
+
+	// if this.waittimer != nil {
+	// 	this.waittimer.Stop()
+	// }
+
+	this.ua.room = nil
+	this.ub.room = nil
+	this.uc.room = nil
+
+	this.ua = nil
+	this.ub = nil
+	this.uc = nil
+
+	onlinenum[this.roomtype] -= 3
+	this.stop <- 1
+
+	// this.ua = nil
+	// this.ub = nil
+	// this.uc = nil
+
+	// this.roomtype = 0
+	// this.verifycount = 0
+
+	// this.propos = 0
+
+	// this.landlord = 0
+	// this.spring = 0
+
+	// this.ua.iscall = -1
+	// this.ub.iscall = -1
+	// this.uc.iscall = -1
+
+	// this.ua.utype = 0
+	// this.ub.utype = 0
+	// this.uc.utype = 0
+
+	// this.ua.isvcstart = false
+	// this.ub.isvcstart = false
+	// this.uc.isvcstart = false
+
+	// this.mulstate = 0
+	// this.mul.Rest()
+
+	// this.nextplayer = 0
+	// this.waittimer.Stop()
+}
+
+func (this *Room) Reset() {
+
+	this.roomtype = 0
 	this.verifycount = 0
-	this.notcalllocout = 0
-	this.grabcount = 0
-	this.firstcaller = 0
-	this.firstgraber = 0
+
 	this.propos = 0
 
-	this.ua.iscall = 1
-	this.ub.iscall = 1
-	this.uc.iscall = 1
+	this.landlord = 0
+	this.spring = 0
+
+	this.ua.iscall = -1
+	this.ub.iscall = -1
+	this.uc.iscall = -1
+
 	this.ua.utype = 0
 	this.ub.utype = 0
 	this.uc.utype = 0
+
+	this.ua.isvcstart = false
+	this.ub.isvcstart = false
+	this.uc.isvcstart = false
+
+	this.mulstate = 0
+	this.mul.Rest()
+
+	this.nextplayer = 0
+
+	this.isplaying = false
+
+	this.firstmingpai = 0
+
+	//this.waittimer.Stop()
+}
+
+//计算底牌倍数
+func (this *Room) GetBackCardMul() int {
+	//取得底牌
+	//计算牌型
+	//按牌型计算倍数
+	if this.backcards[0] > 517 || this.backcards[1] > 517 || this.backcards[2] > 517 {
+		//大小王
+		return 2
+	}
+
+	var d [3]int
+	var f [3]int
+
+	for i, v := range this.backcards {
+		d[i] = (int)(v / 100.0)
+		f[i] = v % 100
+	}
+
+	if d[0] == d[1] && d[0] == d[2] { //清一色
+		return 3
+	}
+
+	if f[0] == f[1] && f[0] == f[2] { //豹子
+		return 3
+	}
+
+	//排序
+	if f[0] > f[1] {
+		t := f[0]
+		f[0] = f[1]
+		f[1] = t
+	}
+
+	if f[1] > f[2] {
+		t := f[1]
+		f[1] = f[2]
+		f[2] = t
+	}
+
+	if f[0] > f[1] {
+		t := f[0]
+		f[0] = f[1]
+		f[1] = t
+	}
+
+	//顺子
+	if f[0]+1 == f[1] && f[0]+2 == f[2] {
+		return 3
+	}
+
+	return 1
+}
+
+func (this *Room) GetPlayer(pos int) *Player {
+	switch pos {
+	case 1:
+		return this.ua
+	case 2:
+		return this.ub
+	case 3:
+		return this.uc
+	}
+	return nil
+}
+func (this *Room) GetNextPlayer(currpos int) *Player {
+	switch currpos {
+	case 1:
+		return this.ub
+	case 2:
+		return this.uc
+	case 3:
+		return this.ua
+	}
+	return nil
+}
+
+func (this *Room) GetNextPlayerPos(currpos int) int {
+	next := (currpos + 1) % 3
+	if next == 0 {
+		next = 3
+	}
+	return next
+}
+
+func (this *Room) AutoPutCard(pos int) []interface{} {
+
+	c := make([]interface{}, 1)
+	switch pos {
+	case 1:
+		c[0] = (float64)(this.ua.cards[0])
+	case 2:
+		c[0] = (float64)(this.ub.cards[0])
+	case 3:
+		c[0] = (float64)(this.uc.cards[0])
+	}
+
+	return c
+}
+
+func (this *Mul) Rest() {
+	this.Init = 1
+	this.Vc = 1     //  -- vc: 明牌倍数
+	this.Grab = 1   //  -- grab: 抢地主倍数
+	this.Bc = 1     //  -- bc: 底牌倍数
+	this.Bomb = 1   //  -- bomb: 炸弹倍数
+	this.Spring = 1 //  -- spring: 春天倍数
+	this.Lo = 1     //-- lo: 地主倍数
+	this.U1 = 1     //  -- u1 用户1农民倍数
+	this.U2 = 1     //  -- u2 用户2农民情况
+	this.U3 = 1     //  -- u3 用户3农民情况
+}
+
+func UpLimit(v, own, max int) int { //v 理论,own 拥有的豆  max  封顶豆   tex 门票(税)
+
+	if v > own {
+		if own > max {
+			return max
+		} else {
+			return own
+		}
+	} else {
+		if v > max {
+			return max
+		} else {
+			return v
+		}
+	}
 }

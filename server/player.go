@@ -1,4 +1,4 @@
-// player
+// server
 package server
 
 import (
@@ -6,11 +6,13 @@ import (
 	"UULoServer/model"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+//Packet 客户端发来的数据包格式
 type Packet struct {
 	Id   uint16
 	Msg  string
@@ -18,7 +20,8 @@ type Packet struct {
 }
 type Player struct {
 	//玩家所属房间
-	room *Room
+	queue *PlayerQueue //所在队列
+	room  *Room
 
 	// The websocket connection.
 	conn *websocket.Conn
@@ -29,24 +32,29 @@ type Player struct {
 	//玩家的位置
 	pos int
 
-	iscall int //是否叫地主 1 叫 0 不叫
+	iscall int //-1 未叫 是否叫地主 2 抢 1 叫 0 不叫/不抢
 
-	utype int //玩家类型 1 地主 2农名
+	utype     int  //玩家类型 1 地主 2农名
+	isvcstart bool //是否明牌开始
 
+	mul   int   //玩家倍数
 	cards []int //分配的牌
 
 	user *model.GameUser //玩家信息
+
+	noping int //无心跳检测次数
 }
 
 func NewUser(ws *websocket.Conn) *Player {
-	return &Player{room: nil, conn: ws, send: make(chan []byte, 512),
-		pos: 0, iscall: 1, utype: 0, user: nil}
+	return &Player{queue: nil, room: nil, conn: ws, send: make(chan []byte, 512),
+		pos: 0, iscall: -1, utype: 0, user: nil, mul: 1, noping: 0, isvcstart: false}
 }
 
 //读协程，从websocket中读取数据
 func (this *Player) readPump() {
 	go func() {
 		defer func() {
+			this.Close()
 			this.conn.Close()
 		}()
 
@@ -67,7 +75,7 @@ func (this *Player) readPump() {
 				}
 				break
 			}
-			fmt.Print("received a message ") //显示原始数据
+			fmt.Print("接收到消息  <--- ") //显示原始数据
 			fmt.Println(string(message))
 
 			var pk Packet
@@ -88,149 +96,93 @@ func (this *Player) readPump() {
 					}
 				}
 
+			// case 1900: //取得token 并开启心跳
+			// 	res := `{"order":"2900","code":0,"data":{"token":"0","key":"0","iv":"0"}}`
+			// 	this.send <- []byte(res)
+
+			// case 1100:
+			// 	// HeartBeat: {sendId: 1100, msg: "send_HeartBeat"},// 心跳
+			// 	this.HeartBeat()
+
 			case 1010: //GetSysCfg: {sendId: 1010, msg: "send_GetSysCfg"},// 获取系统配置
 				this.RoomCfg()
 
+			case 1011: //UpdateDeskPeople: {sendId: 1011, msg: "send_UpdateDeskPeople"},// 获取场次人数
+				this.UpdateDeskPeople()
+
 			case 1021: //EnterHome: {sendId: 1021, msg: "send_EnterHome"},// 进入房间 data :{ room: enterRoom.id }
 				//EnterHome: {recvId: 2021, msg: "recv_EnterHome"},// 进入房间
-				matchqueue.Put(this.user.ObjectId, this) //将该玩家加入匹配队列
-
-				msg := make(map[string]interface{})
-
-				msg["order"] = "2021"
-				msg["code"] = "0"
-
-				msg["data"] = "0"
-				//--------------
-
-				data, err := json.Marshal(&msg)
-				if err != nil {
-					logs.Error("json marshal error:%s", err.Error())
-				}
-				this.send <- data
+				this.EnterRoom()
 
 			case 1050: //GetShopListInfo: {sendId: 1050, msg: "send_GetShopListInfo"},// 获取商品列表
 				this.GoodsList()
+
+			case 1051: //{"id":1051,"msg":"send_PayShop","data":{"id":"11","platform":3}}
+				if data, ok := pk.Data.(map[string]interface{}); ok {
+					if idstr, ok := data["id"].(string); ok {
+						//id, err := strconv.Atoi(idstr)
+						this.PayShop(idstr)
+					}
+				}
 
 			case 1056: //  GetRank: {sendId: 1056, msg: "send_GetRank"},// 获取排行
 				this.RankInfo()
 
 			case 1006: // SetHead: {sendId: 1006, msg: "send_SetHead"},// 设置自定义头像
 				//SetHead: {recvId: 2006, msg: "recv_SetHead"},// 设置自定义头像
-
-				msg := make(map[string]interface{})
-				res := make(map[string]interface{})
-				msg["order"] = "2006"
-				code := "0"
-
-				var roleid int = 0
+				var roleid int
 				v, ok := pk.Data.(float64)
 				if ok {
 					roleid = (int)(v)
+					this.SetHead(roleid)
 				} else {
-					code = "1"
+					continue
 				}
 
-				if code == "0" {
-					bm := make(map[string]interface{})
-					bm["img"] = roleid
+			case 1030: // BeganGame: {sendId: 1030, msg: "send_BeganGame"},// 开始游戏
+				//NetSocketMgr.send(GameNetMsg.send.BeganGame, {vc: 0, room: roomID});
+				if data, ok := pk.Data.(map[string]interface{}); ok {
 
-					err := model.UpdateUser(this.user.ObjectId, bm)
-					if err != nil {
-						logs.Error("update db error:%s", err.Error())
-						code = "2"
+					if room, ok := data["room"].(string); ok {
+
+						if vc, ok := data["vc"].(float64); ok {
+
+							id, err := strconv.Atoi(room)
+							if err != nil {
+								fmt.Println("string to in  error")
+							}
+							this.BeginGame((int)(vc), (int)(id))
+						}
 					}
-					res["img"] = roleid
-					res["costup"] = 0
-					res["up"] = this.user.Up
-					res["imsg"] = []int{1001, 1002, 1003, 1004}
-
-					msg["data"] = res
-					//data['imgs'];// 用户已经购买的所有角色
-					//data['costup'];// 花费的金币
-					//data['img'];// 更换后的头像
-					//data['up'];// 最新的金币
 				}
 
-				msg["code"] = code
-				data, err := json.Marshal(&msg)
-				if err != nil {
-					logs.Error("json marshal error:%s", err.Error())
+			case 1022:
+				//LeaveHome: {sendId: 1022, msg: "send_LeaveHome"},// 离开房间
+				//this.LeaveRoom()
+				if this.user == nil || this.room == nil {
+					fmt.Println("将消息转入房间时失败")
+					this.LeaveRoom()
+				} else {
+					rmsg := Relay{pos: this.pos, msg: pk}
+					this.room.rmsg <- rmsg
 				}
-				this.send <- data
+
+			case 1027: //FindPlayerOver:{sendId:1027,msg:"send_FindPlayerOver"},//匹配超时
+				this.FindPlayerOver()
+			case 1037: //ChangeDesk: {sendId: 1037, msg: "send_ChangeDesk"},// 换桌
+				this.ChangeDesk()
 
 			//其余消息上传给房间
 			default:
-				// if this.user == nil || this.room == nil {
-				// 	ret := fmt.Sprintf(`{"cmd":"%s","err":"request sequence error"}`, cmd)
-				// 	this.send <- []byte(ret)
-				// } else {
-				// 	rmsg := Relay{pos: this.pos, msg: msg}
-				// 	this.room.rmsg <- rmsg
-				// }
-			}
-			/*
-				case "joinroom":
-					if this.user == nil {
-						var res = `{"cmd":"joinroom","err":"request sequence error"}`
-						this.send <- []byte(res)
-					} else {
-						//matchqueue.Put(this.user.ObjectId, this)
-						var res = `{"cmd":"joinroom","err":""}`
-						this.send <- []byte(res)
-					}
-
-				//离开房间，离开匹配队列
-				case "leaveroom":
-					if this.user == nil {
-						var res = `{"cmd":"leaveroom","err":"request sequence error"}`
-						this.send <- []byte(res)
-					} else {
-						if matchqueue.Contains(this.user.ObjectId) {
-							matchqueue.Remove(this.user.ObjectId)
-							var res = `{"cmd":"leaveroom","err":""}`
-							this.send <- []byte(res)
-							if this.room != nil {
-								//告知房间用户离开
-								rmsg := Relay{pos: this.pos, msg: msg}
-								this.room.rmsg <- rmsg
-							}
-
-						} else {
-							var res = `{"cmd":"leaveroom","err":"game already start"}`
-							this.send <- []byte(res)
-						}
-					}
-				//用户准备开始游戏,加入匹配队列
-				case "userready":
-					if this.user == nil {
-						var res = `{"cmd":"userready","err":"request sequence error"}`
-						this.send <- []byte(res)
-					} else {
-						matchqueue.Put(this.user.ObjectId, this)
-						var res = `{"cmd":"userready","err":""}`
-						this.send <- []byte(res)
-					}
-				//金币排名
-				case "upranking":
-					if this.user == nil {
-						var res = `{"cmd":"userready","err":"request sequence error"}`
-						this.send <- []byte(res)
-					} else {
-						this.RankingByUp()
-					}
-
-				//其余消息上传给房间
-				default:
-					if this.user == nil || this.room == nil {
-						ret := fmt.Sprintf(`{"cmd":"%s","err":"request sequence error"}`, cmd)
-						this.send <- []byte(ret)
-					} else {
-						rmsg := Relay{pos: this.pos, msg: msg}
-						this.room.rmsg <- rmsg
-					}
+				if this.user == nil || this.room == nil {
+					fmt.Println("将消息转入房间时失败")
+					//ret := fmt.Sprintf(`{"cmd":"%s","err":"request sequence error"}`, cmd)
+					//this.send <- []byte(ret)
+				} else {
+					rmsg := Relay{pos: this.pos, msg: pk}
+					this.room.rmsg <- rmsg
 				}
-			}*/
+			}
 		}
 	}()
 
@@ -242,6 +194,7 @@ func (this *Player) writePump() {
 		ticker := time.NewTicker(pingPeriod)
 		defer func() {
 			ticker.Stop()
+			this.Close()
 			this.conn.Close()
 		}()
 
@@ -261,6 +214,8 @@ func (this *Player) writePump() {
 				if err != nil {
 					return
 				}
+				fmt.Print("输出消息  ---> ") //显示原始数据
+				fmt.Println(string(message))
 				w.Write(message)
 
 				if err := w.Close(); err != nil {
@@ -268,11 +223,13 @@ func (this *Player) writePump() {
 					return
 				}
 
-			//ping
+			//ping  定时发送心跳检测,只要无错误  即联接正常
 			case <-ticker.C:
 				this.conn.SetWriteDeadline(time.Now().Add(writeWait))
+
 				if err := this.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
 					logs.Error("ping error:%v", err.Error())
+
 					return
 				}
 			}
@@ -393,7 +350,8 @@ func (this *Player) RoomCfg() {
 	msg["order"] = "2010"
 	msg["code"] = "0"
 
-	res["cp"] = []string{"1|10|5|100|10000|1|1000000", "2|10|5|100|10000|1|1000000"}
+	//res["cp"] = []string{"1|100|1|10000|100000|1|1000000", "2|1000|5|10000|10000000|1|10000000"}
+	res["cp"] = model.GetRoomsCfg()
 	res["sp"] = []string{"10|10|5|100|10000|100000", "11|20|5|100|10000|100000"}
 
 	msg["data"] = res
@@ -415,7 +373,15 @@ func (this *Player) RankInfo() {
 	msg["code"] = "0"
 
 	//--------------
-	res["gold"] = []string{"t1|10|5|100|11|1000000|222", "t1|10|5|100|11|1000000|222"}
+	// //   名字 |  胜局  | 连胜  |  3   |  4  | 头像
+	// //获取前20名排名
+	rank, err := model.GetRank(1)
+	if err != nil {
+		res["err"] = err.Error()
+	}
+	// res["ranking"] = rank
+	//res["gold"] = []string{"t1|10|5|100|11|1000000|222", "t1|10|5|100|11|1000000|222"}
+	res["gold"] = rank
 	res["ud"] = []string{"t1|10|5|100|11|1000000|222", "t1|10|5|100|11|1000000|222"}
 
 	msg["data"] = res
@@ -440,12 +406,15 @@ func (this *Player) GoodsList() {
 	//--------------
 	res := make(map[string][]string)
 
-	res["list"] = []string{"10|100|100|1|10",
-		"11|100|100|0|10",
-		"12|100|100|0|10",
-		"50|100|100|1|11",
-		"51|100|100|1|11",
-		"52|100|100|1|11"}
+	// 商品ID + | + 金币 + | + 对应人民币 + | + 是否热卖 + | + 多送百分比
+	// res["list"] = []string{"10|100|100|1|10",
+	// 	"11|100|100|0|10",
+	// 	"12|100|100|0|10",
+	// 	"50|100|100|1|11",
+	// 	"51|100|100|1|11",
+	// 	"52|100|100|1|11"}
+
+	res["list"], _ = model.GetGoodList()
 
 	msg["data"] = res
 	//--------------
@@ -456,32 +425,269 @@ func (this *Player) GoodsList() {
 	this.send <- data
 }
 
-//离开房间
-func (this *Player) LeaveRoom() {
-	//重置用户pos: 0, iscall: 1, utype: 0
-	this.pos = 0
-	this.iscall = 1
-	this.utype = 0
-	this.room = nil
-	this.cards = nil
-}
+//玩家进入游戏
+func (this *Player) EnterRoom() {
 
-//金币排名
-func (this *Player) RankingByUp() {
-	res := make(map[string]interface{})
-	res["cmd"] = "upranking"
-	res["err"] = ""
+	msg := make(map[string]interface{})
 
-	//获取前20名排名
-	rank, err := model.RankingByUp()
-	if err != nil {
-		res["err"] = err.Error()
-	}
-	res["ranking"] = rank
+	msg["order"] = "2021"
+	msg["code"] = "0"
 
-	data, err := json.Marshal(&res)
+	msg["data"] = "0"
+	//--------------
+
+	data, err := json.Marshal(&msg)
 	if err != nil {
 		logs.Error("json marshal error:%s", err.Error())
 	}
 	this.send <- data
+}
+
+//玩家开始游戏 开始匹配 用户
+func (this *Player) BeginGame(vc, id int) {
+
+	//BeyondMax: 9007, //金豆不在该房间范围之内 超出最高限制
+	if this.user.Up > model.GetDetialCfg(id).Maxenterpoint {
+		res := `{"order":"","code":9007,"data":""}`
+		this.send <- []byte(res)
+		return
+	}
+
+	//是否破产
+	if this.user.Up <= model.GetDetialCfg(id).Minenterpoint {
+		this.Bankrupt(id)
+	}
+
+	//GoldNotEnough: 9000,// 金豆不足 低于最低限制
+	if this.user.Up < model.GetDetialCfg(id).Minenterpoint {
+		res := `{"order":"","code":9000,"data":""}`
+		this.send <- []byte(res)
+		return
+	}
+
+	this.queue = playerquenes[id]
+	this.queue.Put(this.user.ObjectId, this) //将该玩家加入匹配队列
+	//matchqueue.Put(this.user.ObjectId, this) //将该玩家加入匹配队列
+	fmt.Printf("当前队列人数:  %d  \n", this.queue.Len())
+
+	//是否明牌开始
+	if vc > 0 {
+		this.isvcstart = true
+	}
+
+	msg := make(map[string]interface{})
+
+	msg["order"] = "2030"
+	msg["code"] = "0"
+
+	//res := make(map[string]interface{})
+	//res["pos"] = this.pos
+	//res["room"] = this.room.roomtype
+	msg["data"] = ""
+	//--------------
+
+	data, err := json.Marshal(&msg)
+	if err != nil {
+		logs.Error("json marshal error:%s", err.Error())
+	}
+	this.send <- data
+}
+
+//设置形像
+func (this *Player) SetHead(img int) {
+	msg := make(map[string]interface{})
+	res := make(map[string]interface{})
+	msg["order"] = "2006"
+	code := "0"
+
+	bm := make(map[string]interface{})
+	bm["img"] = img
+
+	err := model.UpdateUser(this.user.ObjectId, bm)
+	if err != nil {
+		logs.Error("update db error:%s", err.Error())
+		code = "1"
+	}
+	res["img"] = img
+	res["costup"] = 0
+	res["up"] = this.user.Up
+	res["imsg"] = []int{1001, 1002, 1003, 1004}
+
+	msg["data"] = res
+	//data['imgs'];// 用户已经购买的所有角色
+	//data['costup'];// 花费的金币
+	//data['img'];// 更换后的头像
+	//data['up'];// 最新的金币
+
+	msg["code"] = code
+	data, err := json.Marshal(&msg)
+	if err != nil {
+		logs.Error("json marshal error:%s", err.Error())
+	}
+	this.send <- data
+}
+
+//匹配对手超时,移出匹配队列
+func (this *Player) FindPlayerOver() {
+	//matchqueue.Remove(this.user.ObjectId) //
+	if this.queue != nil {
+		this.queue.Remove(this.user.ObjectId) //
+	}
+}
+
+func (this *Player) ChangeDesk() {
+	//ChangeDesk: {recvId: 2044, msg: "recv_ChangeDesk"},// 换桌
+	msg := make(map[string]interface{})
+	msg["order"] = "2044"
+	msg["code"] = "0"
+	msg["data"] = "0"
+
+	data, err := json.Marshal(&msg)
+	if err != nil {
+		logs.Error("json marshal error:%s", err.Error())
+	}
+	this.send <- data
+}
+
+//离开房间
+func (this *Player) LeaveRoom() {
+	//LeaveHome: {recvId: 2022, msg: "recv_LeaveHome"},// 离开房间
+
+	//matchqueue.Remove(this.user.ObjectId) //移出匹配队列
+	if this.queue != nil {
+		this.queue.Remove(this.user.ObjectId)
+		this.queue = nil
+	}
+	msg := make(map[string]interface{})
+
+	msg["order"] = "2022"
+	msg["code"] = "0"
+	msg["data"] = "0"
+	//--------------
+
+	data, err := json.Marshal(&msg)
+	if err != nil {
+		logs.Error("json marshal error:%s", err.Error())
+	}
+	this.send <- data
+}
+
+func (this *Player) UpdateDeskPeople() {
+	//UpdateDeskPeople: {recvId: 2011, msg: "recv_UpdateDeskPeople"},// 获取场次人数
+	msg := make(map[string]interface{})
+	msg["order"] = "2011"
+	msg["code"] = "0"
+	msg["data"] = onlinenum
+
+	data, err := json.Marshal(&msg)
+	if err != nil {
+		logs.Error("json marshal error:%s", err.Error())
+	}
+	this.send <- data
+}
+
+// 破产
+func (this *Player) Bankrupt(id int) {
+	//	OnBankrupt: {recvId: 2060, msg: "recv_OnBankrupt"},
+	//data.getup;
+	add := 0 //初助数
+
+	t, err := time.Parse("2006-01-02 15:04:05", this.user.Lastsubsidy.Format("2006-01-02 15:04:05"))
+
+	if err != nil {
+		fmt.Println(err)
+	} else {
+		d := time.Now().Sub(t)
+		if d.Hours() > 24 {
+			//fmt.Println("可以补助")
+			add = 3000
+
+			bm := make(map[string]interface{})
+			bm["up"] = this.user.Up + add
+			bm["br"] = this.user.Br + 1
+			bm["lastsubsidy"] = time.Now()
+
+			err := model.UpdateUser(this.user.ObjectId, bm)
+			if err != nil {
+				logs.Error("update db error:%s", err.Error())
+				return
+			}
+
+			this.user.Up += add //补助
+			this.user.Br += 1   //破产数
+			this.user.Lastsubsidy = time.Now()
+			res := make(map[string]interface{})
+			res["up"] = this.user.Up
+			res["num"] = this.user.Br
+			res["getup"] = add
+
+			msg := make(map[string]interface{})
+			msg["order"] = 2060
+			msg["code"] = 0
+			msg["data"] = res
+
+			data, err := json.Marshal(&msg)
+			if err != nil {
+				logs.Error("json marshal error:%s", err.Error())
+			}
+			this.send <- data
+		}
+	}
+}
+
+//购买商品
+func (this *Player) PayShop(id string) {
+	//返回订单号 和 商品id
+	// PayShop: {recvId: 2051, msg: "recv_PayShop"},// 购买商品
+	msg := make(map[string]interface{})
+	msg["order"] = 2051
+	msg["code"] = 0
+
+	res := make(map[string]interface{})
+	res["id"] = id
+	res["no"] = 100000 //模拟一个订单号
+
+	msg["data"] = res
+
+	data, err := json.Marshal(&msg)
+	if err != nil {
+		logs.Error("json marshal error:%s", err.Error())
+	}
+	this.send <- data
+}
+
+//金币排名
+func (this *Player) RankingByUp() {
+	// res := make(map[string]interface{})
+	// res["cmd"] = "upranking"
+	// res["err"] = ""
+
+	// //获取前20名排名
+	// rank, err := model.RankingByUp()
+	// if err != nil {
+	// 	res["err"] = err.Error()
+	// }
+	// res["ranking"] = rank
+
+	// data, err := json.Marshal(&res)
+	// if err != nil {
+	// 	logs.Error("json marshal error:%s", err.Error())
+	// }
+	// this.send <- data
+}
+
+// func (this *Player) HeartBeat{
+
+// }
+
+func (this *Player) Close() {
+	if this.user != nil {
+		//向服务器发送 断开消息
+		fmt.Printf("========  player [ %s ] is close conn ...   ========\n", this.user.Nickname)
+		if this.room != nil { //转发房间  有人退出
+			this.room.Escape(this.pos)
+		}
+	} else {
+		fmt.Printf("========  player is close conn ...   ========\n")
+	}
 }

@@ -1,0 +1,113 @@
+[asm_amd64.s:1337] 2019/04/28 10:07:43 [INFO] open db success.
+[asm_amd64.s:1337] 2019/04/28 10:07:43 [INFO] server start, listen 192.168.0.126:8765/
+[asm_amd64.s:1337] 2019/04/28 10:09:11 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 10:09:17 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 10:35:11 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 10:35:15 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 10:35:22 [ERROR] ping error:write tcp 192.168.0.126:8765->192.168.0.126:50573: wsasend: An established connection was aborted by the software in your host machine.
+[asm_amd64.s:1337] 2019/04/28 10:35:22 [ERROR] writer close error:write tcp 192.168.0.126:8765->192.168.0.126:50575: wsasend: An established connection was aborted by the software in your host machine.
+[asm_amd64.s:1337] 2019/04/28 10:51:23 [INFO] open db success.
+[asm_amd64.s:1337] 2019/04/28 10:51:23 [INFO] server start, listen 192.168.0.126:8765/
+[asm_amd64.s:1337] 2019/04/28 10:53:20 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 10:53:46 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 10:59:08 [ERROR] ping error:write tcp 192.168.0.126:8765->192.168.0.126:53633: wsasend: An established connection was aborted by the software in your host machine.
+[asm_amd64.s:1337] 2019/04/28 10:59:08 [ERROR] writer close error:write tcp 192.168.0.126:8765->192.168.0.126:53635: wsasend: An established connection was aborted by the software in your host machine.
+[asm_amd64.s:1337] 2019/04/28 11:17:13 [INFO] open db success.
+[asm_amd64.s:1337] 2019/04/28 11:17:13 [INFO] server start, listen 192.168.0.126:8765/
+[asm_amd64.s:1337] 2019/04/28 11:23:42 [ERROR] put card  num  error :14    14    
+[asm_amd64.s:1337] 2019/04/28 11:23:45 [ERROR] put card  num  error :17    17    
+[asm_amd64.s:1337] 2019/04/28 11:23:47 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 11:24:36 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 11:30:00 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 11:30:00 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 11:30:01 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 11:30:53 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 11:31:36 [ERROR] put card  num  error :18    18    
+[asm_amd64.s:1337] 2019/04/28 11:32:01 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:32:19 [ERROR] put card  num  error :17    17    
+[asm_amd64.s:1337] 2019/04/28 11:32:22 [ERROR] put card  num  error :16    16    
+[asm_amd64.s:1337] 2019/04/28 11:32:26 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:32:27 [ERROR] put card  num  error :17    17    
+[asm_amd64.s:1337] 2019/04/28 11:32:43 [ERROR] put card  num  error :11    11    
+[asm_amd64.s:1337] 2019/04/28 11:32:49 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:32:52 [ERROR] put card  num  error :17    17    
+[asm_amd64.s:1337] 2019/04/28 11:32:58 [ERROR] put card  num  error :6    6    
+[asm_amd64.s:1337] 2019/04/28 11:32:59 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:33:00 [ERROR] put card  num  error :17    17    
+[asm_amd64.s:1337] 2019/04/28 11:33:03 [ERROR] put card  num  error :4    4    
+[asm_amd64.s:1337] 2019/04/28 11:33:10 [ERROR] put card  num  error :13    13    
+[asm_amd64.s:1337] 2019/04/28 11:33:18 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:33:19 [ERROR] put card  num  error :4    4    
+[asm_amd64.s:1337] 2019/04/28 11:33:26 [ERROR] put card  num  error :13    13    
+[asm_amd64.s:1337] 2019/04/28 11:33:27 [ERROR] put card  num  error :7    7    
+[asm_amd64.s:1337] 2019/04/28 11:33:28 [ERROR] put card  num  error :4    4    
+[asm_amd64.s:1337] 2019/04/28 11:33:30 [ERROR] put card  num  error :13    13    
+[asm_amd64.s:1337] 2019/04/28 11:33:34 [ERROR] put card  num  error :5    5    
+[asm_amd64.s:1337] 2019/04/28 11:33:35 [ERROR] put card  num  error :4    4    
+[asm_amd64.s:1337] 2019/04/28 11:34:00 [ERROR] put card  num  error :11    11    
+[asm_amd64.s:1337] 2019/04/28 11:34:04 [ERROR] put card  num  error :5    5    
+[asm_amd64.s:1337] 2019/04/28 11:34:07 [ERROR] put card  num  error :4    4    
+[asm_amd64.s:1337] 2019/04/28 11:34:09 [ERROR] put card  num  error :10    10    
+[asm_amd64.s:1337] 2019/04/28 11:34:10 [ERROR] put card  num  error :5    5    
+[asm_amd64.s:1337] 2019/04/28 11:34:11 [ERROR] put card  num  error :3    3    
+[asm_amd64.s:1337] 2019/04/28 11:34:13 [ERROR] put card  num  error :10    10    
+[asm_amd64.s:1337] 2019/04/28 11:34:38 [ERROR] put card  num  error :4    4    
+[asm_amd64.s:1337] 2019/04/28 11:35:03 [ERROR] put card  num  error :2    2    
+[asm_amd64.s:1337] 2019/04/28 11:35:05 [ERROR] put card  num  error :10    10    
+[asm_amd64.s:1337] 2019/04/28 11:35:05 [ERROR] put card  num  error :4    4    
+[asm_amd64.s:1337] 2019/04/28 11:35:07 [ERROR] put card  num  error :1    1    
+[asm_amd64.s:1337] 2019/04/28 11:35:09 [ERROR] put card  num  error :10    10    
+[asm_amd64.s:1337] 2019/04/28 11:35:09 [ERROR] put card  num  error :4    4    
+[asm_amd64.s:1337] 2019/04/28 11:35:10 [ERROR] put card  num  error :0    0    
+[asm_amd64.s:1337] 2019/04/28 11:36:11 [ERROR] put card  num  error :19    19    
+[asm_amd64.s:1337] 2019/04/28 11:36:14 [ERROR] put card  num  error :17    17    
+[asm_amd64.s:1337] 2019/04/28 11:36:16 [ERROR] put card  num  error :17    17    
+[asm_amd64.s:1337] 2019/04/28 11:36:26 [ERROR] put card  num  error :17    17    
+[asm_amd64.s:1337] 2019/04/28 11:36:29 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:36:34 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:36:37 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:36:42 [ERROR] put card  num  error :13    13    
+[asm_amd64.s:1337] 2019/04/28 11:36:45 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:36:46 [ERROR] put card  num  error :15    15    
+[asm_amd64.s:1337] 2019/04/28 11:36:54 [ERROR] put card  num  error :12    12    
+[asm_amd64.s:1337] 2019/04/28 11:36:59 [ERROR] put card  num  error :14    14    
+[asm_amd64.s:1337] 2019/04/28 11:37:03 [ERROR] put card  num  error :14    14    
+[asm_amd64.s:1337] 2019/04/28 11:37:06 [ERROR] put card  num  error :11    11    
+[asm_amd64.s:1337] 2019/04/28 11:37:09 [ERROR] put card  num  error :13    13    
+[asm_amd64.s:1337] 2019/04/28 11:37:15 [ERROR] put card  num  error :13    13    
+[asm_amd64.s:1337] 2019/04/28 11:37:22 [ERROR] put card  num  error :10    10    
+[asm_amd64.s:1337] 2019/04/28 11:37:27 [ERROR] put card  num  error :13    13    
+[asm_amd64.s:1337] 2019/04/28 11:37:29 [ERROR] put card  num  error :13    13    
+[asm_amd64.s:1337] 2019/04/28 11:37:37 [ERROR] put card  num  error :9    9    
+[asm_amd64.s:1337] 2019/04/28 11:37:41 [ERROR] put card  num  error :12    12    
+[asm_amd64.s:1337] 2019/04/28 11:37:48 [ERROR] put card  num  error :12    12    
+[asm_amd64.s:1337] 2019/04/28 11:37:50 [ERROR] put card  num  error :9    9    
+[asm_amd64.s:1337] 2019/04/28 11:37:50 [ERROR] put card  num  error :12    12    
+[asm_amd64.s:1337] 2019/04/28 11:37:56 [ERROR] put card  num  error :9    9    
+[asm_amd64.s:1337] 2019/04/28 11:37:56 [ERROR] put card  num  error :12    12    
+[asm_amd64.s:1337] 2019/04/28 11:37:59 [ERROR] put card  num  error :3    3    
+[asm_amd64.s:1337] 2019/04/28 11:38:24 [ERROR] put card  num  error :7    7    
+[asm_amd64.s:1337] 2019/04/28 11:38:49 [ERROR] put card  num  error :12    12    
+[asm_amd64.s:1337] 2019/04/28 11:38:51 [ERROR] put card  num  error :3    3    
+[asm_amd64.s:1337] 2019/04/28 11:39:11 [ERROR] put card  num  error :6    6    
+[asm_amd64.s:1337] 2019/04/28 11:39:13 [ERROR] put card  num  error :12    12    
+[asm_amd64.s:1337] 2019/04/28 12:13:16 [INFO] open db success.
+[asm_amd64.s:1337] 2019/04/28 12:13:16 [INFO] server start, listen 192.168.0.126:8765/
+[asm_amd64.s:1337] 2019/04/28 12:17:15 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 12:17:15 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 12:17:15 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 12:17:49 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 12:17:51 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 12:17:54 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 12:19:12 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 12:19:34 [INFO] websocket closed: websocket: close 1005 (no status)
+[asm_amd64.s:1337] 2019/04/28 12:20:02 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 12:20:19 [ERROR] ping error:websocket: close sent
+[asm_amd64.s:1337] 2019/04/28 12:25:13 [INFO] open db success.
+[asm_amd64.s:1337] 2019/04/28 12:25:13 [INFO] server start, listen 192.168.0.126:8765/
+[asm_amd64.s:1337] 2019/04/28 12:31:45 [INFO] open db success.
+[asm_amd64.s:1337] 2019/04/28 12:31:45 [INFO] server start, listen 192.168.0.126:8765/
+[asm_amd64.s:1337] 2019/04/28 12:36:46 [INFO] open db success.
+[asm_amd64.s:1337] 2019/04/28 12:36:46 [INFO] server start, listen 192.168.0.126:8765/
+[asm_amd64.s:1337] 2019/04/28 12:49:32 [INFO] websocket closed: websocket: close 1001 (going away)
+[asm_amd64.s:1337] 2019/04/28 12:50:19 [ERROR] ping error:websocket: close sent

@@ -12,6 +12,7 @@ import (
 	"github.com/go-xorm/xorm"
 )
 
+//5tyws3SGaB3y7NCaNcRhdJ  测试id
 //游戏内用户表
 type GameUser struct {
 	ObjectId string `xorm:"pk 'objectid'"` //主键，该条记录的唯一标识
@@ -72,12 +73,20 @@ type Ranking struct {
 var engine *xorm.Engine
 var roomscfg []RoomCfg
 
+var Uprank []string
+var Udrank []string
+
 func init() {
 	logs.SetLogFile("uulandlord")
 	var err error
 	// engine, err = xorm.NewEngine("mysql",
 	// 	"developer:dev783edg@tcp(rm-uf65643l032z4k37qo.mysql.rds.aliyuncs.com:3306)/uulandloard")
-	engine, err = xorm.NewEngine("mysql", "root:123456@tcp(127.0.0.1:3306)/uulandloard")
+	//本地测试
+	//engine, err = xorm.NewEngine("mysql", "root:123456@tcp(127.0.0.1:3306)/uulandloard")
+	//内网 rm-2ze53de78491o6ys3.mysql.rds.aliyuncs.com
+	//外网 rm-2ze53de78491o6ys3oo.mysql.rds.aliyuncs.com
+	engine, err = xorm.NewEngine("mysql",
+		"xing:&oDsn1t#*3mC@tcp(rm-2ze53de78491o6ys3oo.mysql.rds.aliyuncs.com:3306)/trading")
 	err = engine.Ping()
 	if err != nil {
 		logs.Error("open db error:%s", err.Error())
@@ -92,11 +101,34 @@ func (this *GameUser) TableName() string {
 }
 
 func (this *User) TableName() string {
-	return "user"
+	return "user1"
 }
 
 func (this *RoomCfg) TableName() string {
 	return "goldroom"
+}
+
+//从基础用户表中查找用户
+// func GetBaseUser(id string) (*User, bool) {
+// 	u := &User{}
+// 	has, _ := engine.Where("id=?", id).Get(u)
+// 	return u, has
+// }
+func GetBaseUser(id string) string {
+
+	sqlstr := fmt.Sprintf(`select * from user where id="%s"`, id)
+
+	results, err := engine.Query(sqlstr)
+
+	if err != nil {
+		return ""
+	}
+
+	if len(results) != 1 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s", results[0]["username"])
 }
 
 func InitRoomsCfg() []RoomCfg {
@@ -148,7 +180,7 @@ func NewUser(name, province, city, country, headimg, uid string, sex int) (*Game
 	u := &GameUser{ObjectId: obj, Nickname: name, Sex: sex, Province: province,
 		City: city, Country: country, Headimgurl: headimg, Unionid: uid,
 		Img: 1001, Up: 10000, Ct: 0, Wn: 0,
-		Tp: "1", Ud: 0, Cw: 0, Br: 0, Guide: 0, Scene: 3001, Lastsubsidy: time.Unix(0, 0)}
+		Tp: "1", Ud: 0, Cw: 0, Br: 0, Guide: 2, Scene: 3001, Lastsubsidy: time.Unix(0, 0)}
 
 	/*
 			Type  string `xorm:"type"`  //账号类型
@@ -171,13 +203,6 @@ func GetUser(Unionid string) (*GameUser, bool) {
 	return u, has
 }
 
-//从基础用户表中查找用户
-func GetBaseUser(id string) (*User, bool) {
-	u := &User{}
-	has, _ := engine.Where("id=?", id).Get(u)
-	return u, has
-}
-
 //更新用户
 func UpdateUser(objid string, bm map[string]interface{}) error {
 	_, err := engine.Table(new(GameUser)).Id(objid).Update(bm)
@@ -186,20 +211,33 @@ func UpdateUser(objid string, bm map[string]interface{}) error {
 }
 
 //以金币排名,取前3名
-func GetRank(ranktype int) ([]string, error) {
-	//名字 |  胜局 wn | 连胜 cw |  3   |  4  | 头像 img
+func GetRank(ranktype int) error {
+	//名字 |  胜局 wn | 连胜 cw |  对局总数 ct   |  头像 4  | 头像 img  | + 金币 up
 	us := make([]GameUser, 0)
 
 	var err error
 	if ranktype == 1 {
-		err = engine.Cols("nickname", "wn", "cw", "up", "ct", "img").Desc("up").Limit(3, 0).Find(&us)
+		err = engine.Cols("nickname", "wn", "cw", "ct", "headimgurl", "img", "up").Desc("up").Limit(3, 0).Find(&us)
 	} else {
-		err = engine.Cols("nickname", "wn", "cw", "up", "ct", "img").Desc("ct").Limit(3, 0).Find(&us)
+		err = engine.Cols("nickname", "wn", "cw", "ct", "headimgurl", "img", "up").Desc("ud").Limit(3, 0).Find(&us)
 	}
 
 	rank := make([]string, len(us))
 	for i, v := range us {
-		rank[i] = fmt.Sprintf("%s|%d|%d|%d|%d|%d", v.Nickname, v.Wn, v.Cw, v.Up, v.Ct, v.Img)
+		rank[i] = fmt.Sprintf("%s|%d|%d|%d|%s|%d|%d", v.Nickname, v.Wn, v.Cw, v.Ct, v.Headimgurl, v.Img, v.Up)
 	}
-	return rank, err
+
+	if ranktype == 1 {
+		Uprank = make([]string, len(us))
+		for i, v := range us {
+			Uprank[i] = fmt.Sprintf("%s|%d|%d|%d|%s|%d|%d", v.Nickname, v.Wn, v.Cw, v.Ct, v.Headimgurl, v.Img, v.Up)
+		}
+		return err
+	} else {
+		Udrank = make([]string, len(us))
+		for i, v := range us {
+			Udrank[i] = fmt.Sprintf("%s|%d|%d|%d|%s|%d|%d", v.Nickname, v.Wn, v.Cw, v.Ct, v.Headimgurl, v.Img, v.Up)
+		}
+		return err
+	}
 }

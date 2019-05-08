@@ -8,6 +8,7 @@ import (
 	"UULoServer/model"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"time"
 )
@@ -87,12 +88,13 @@ func (this *Room) Run() {
 		for {
 			select {
 			case <-this.stop:
-				fmt.Println("---房间已关闭---")
+				//fmt.Println("---房间已关闭---")
+				this.CloseRoom()
 				return
 			//Player中继过来了消息
 			case rg, ok := <-this.rmsg:
 				if ok {
-					fmt.Printf("房间处理数据 <---  %s \n", rg.msg.Id)
+					//fmt.Printf("房间处理数据 <---  %s \n", rg.msg.Id)
 					//if cmd, ok := rg.msg["cmd"].(string); ok {
 					if rg.msg.Id > 0 {
 						switch rg.msg.Id {
@@ -249,6 +251,8 @@ func (this *Room) sendMatchPlayer() {
 	//向三个玩家推送匹配的用户
 	//DeskEnterUser: {recvId: 2031, msg: "recv_DeskEnterUser"},//牌桌匹配到用户
 
+	this.Reset()
+
 	code := "0"
 	res := make(map[string]interface{})
 	//res["room"] = this.roomid
@@ -361,14 +365,15 @@ func (this *Room) dealCards(again int) {
 	msg := make(map[string]interface{})
 
 	mi := 1 //初始倍数
+	cfg := model.GetDetialCfg(this.roomtype)
+	mi = cfg.Initmul
+	this.mul.Init = mi
+
 	if again == 0 {
 		msg["order"] = "2032"
-
-		cfg := model.GetDetialCfg(this.roomtype)
 		//扣除门票
 		ticket := cfg.Ticket
-		mi = cfg.Initmul
-		this.mul.Init = mi
+
 		this.ua.user.Up -= ticket
 		this.ub.user.Up -= ticket
 		this.uc.user.Up -= ticket
@@ -383,6 +388,10 @@ func (this *Room) dealCards(again int) {
 	msg["code"] = "0"
 
 	//{"order":  ,"code":,"data":{"u1":,"u2":,"u3":,"type":,"up":{}}}
+
+	this.ua.cards = make([]int, 17)
+	this.ub.cards = make([]int, 17)
+	this.uc.cards = make([]int, 17)
 
 	up := make(map[string]interface{})
 	cards := gamerule.GenRandCards()
@@ -399,7 +408,7 @@ func (this *Room) dealCards(again int) {
 	res["mul"] = m
 
 	//向ua发牌----------------------------------
-	this.ua.cards = cards[0:17]
+	copy(this.ua.cards, cards[0:17])
 	res["u3"] = cards[0:17]
 
 	up["u1"] = this.uc.user.Up
@@ -414,7 +423,8 @@ func (this *Room) dealCards(again int) {
 	this.ua.send <- data
 
 	//向ub发牌--------------------------------
-	this.ub.cards = cards[17:34]
+	//this.ub.cards = cards[17:34]
+	copy(this.ub.cards, cards[17:34])
 	res["u3"] = cards[17:34]
 
 	up["u1"] = this.ua.user.Up
@@ -429,7 +439,8 @@ func (this *Room) dealCards(again int) {
 	this.ub.send <- data
 
 	//向uc发牌------------------------------
-	this.uc.cards = cards[34:51]
+	//this.uc.cards = cards[34:51]
+	copy(this.uc.cards, cards[34:51])
 	res["u3"] = cards[34:51]
 
 	up["u1"] = this.ub.user.Up
@@ -555,6 +566,7 @@ func (this *Room) callLandlord(pos, call int) {
 			} else { //无明牌玩家 重置牌局
 				this.Reset()
 				this.dealCards(1) //重新发牌
+				return
 			}
 		}
 	}
@@ -649,7 +661,7 @@ func (this *Room) sendLandlordOwer() {
 	res["mul"] = mul
 
 	var lordpos = this.landlord
-	res["lo"] = lordpos //ua是地主
+	res["lo"] = lordpos //who是地主
 
 	this.ua.utype = 2
 	this.ub.utype = 2
@@ -663,6 +675,7 @@ func (this *Room) sendLandlordOwer() {
 
 	//处理确定 地主后  超时操作
 	this.nextplayer = lordpos
+
 	//处理超时加倍
 	// this.waittimer = time.AfterFunc(time.Second*(double), func() {
 	// 	this.mulstate = 3
@@ -687,8 +700,8 @@ func (this *Room) ShoutDouble(pos int, mul int) {
 	} else {
 		res["type"] = 2
 	}
-
 	mul++
+
 	if this.mulstate >= 3 {
 		// if this.waittimer != nil {
 		// 	this.waittimer.Stop()
@@ -702,17 +715,23 @@ func (this *Room) ShoutDouble(pos int, mul int) {
 	if pos > 0 {
 		res["user"] = pos //加倍是
 
-		switch pos {
-		case 1:
-			this.mul.U1 = mul
-			m["u1"] = mul
-		case 2:
-			this.mul.U2 = mul
-			m["u2"] = mul
-		case 3:
-			this.mul.U3 = mul
-			m["u3"] = mul
+		if pos == this.landlord {
+			this.mul.Lo = mul
+			m["lo"] = this.mul.Lo
+		} else {
+			switch pos {
+			case 1:
+				this.mul.U1 = mul
+				m["u1"] = mul
+			case 2:
+				this.mul.U2 = mul
+				m["u2"] = mul
+			case 3:
+				this.mul.U3 = mul
+				m["u3"] = mul
+			}
 		}
+
 		res["mul"] = m
 	}
 
@@ -792,17 +811,10 @@ func (this *Room) PopCards(pos int, cv []interface{}) {
 
 		this.propos = pos
 
-		switch this.spring {
-		case 0:
-			this.spring = 1
-		case 1:
-			if curr.utype == 2 { //非第一手牌时,农民出牌, spring =2
-				this.spring = 2
-			}
-		case 2:
-			if curr.utype == 1 { //非第一手牌时,地主又出牌, spring =3
-				this.spring = 3
-			}
+		if curr.utype == 1 { //地主出牌
+			this.spring += 100
+		} else { //农民出牌
+			this.spring += 1
 		}
 	}
 
@@ -813,13 +825,6 @@ func (this *Room) PopCards(pos int, cv []interface{}) {
 
 	//num := len(curr.cards) - len(cards) //手中剩余牌数
 	num := hcn - pcn //手中剩余牌数
-
-	//logs.Error("put card  num  error :%d    %d    \n", num, len(curr.cards))
-
-	fmt.Printf(" put card num: %d  , hand  card  num: %d  ,    %d  ", pcn, hcn, num)
-	if pcn != 0 && num >= hcn {
-		logs.Error("put card  num  error :curr cardnum  %d ,hand card  %d , put  card  %d    \n", num, hcn, pcn)
-	}
 
 	curr.cards = gamerule.Difference(curr.cards, cards)
 
@@ -855,24 +860,6 @@ func (this *Room) PopCards(pos int, cv []interface{}) {
 // pos 赢的玩家
 func (this *Room) Settlement(pos int) {
 	//GameOver_NormalMatch: {recvId: 2041, msg: "recv_GameOver_NormalMatch"},
-	//{win   u1  u2  u3   reward{ u1 u2  u3}   mul { }  }
-	/*
-				 {     win: 2,// win 胜利的一方 1 地主， 2 农民
-		                reward: {
-		                    u1: 300,
-		                    u2: 600,
-		                    u3: 900,
-		                },
-		                mul: {
-		                    u1: 1,
-		                    u2: 2,
-		                    u3: 3,
-		                },
-		                u1: 9999,  		left
-		                u2: 6666,  	 	right
-		                u3: 7777,    	self
-		            });
-	*/
 
 	winner := this.GetPlayer(pos)
 	var res = make(map[string]interface{})
@@ -883,7 +870,7 @@ func (this *Room) Settlement(pos int) {
 	var rua, rub, ruc int
 
 	//查看春天
-	if this.spring == 1 || this.spring == 2 {
+	if this.spring < 200 || this.spring%100 < 1 {
 		this.mul.Spring = 2
 	}
 
@@ -897,120 +884,123 @@ func (this *Room) Settlement(pos int) {
 	// Maxearn       int `xorm:"maxearn"`       //收益封顶
 
 	cfg := model.GetDetialCfg(this.roomtype)
-	base := cfg.Underpoint
+	base := cfg.Underpoint * mul * this.mul.Lo
 
 	//计算金币
 	//连胜次数更新
 	if winner.utype == 1 { //地主胜
 		switch winner.pos {
 		case 1:
-			top := this.ua.user.Up / 2 //计算上限
+			//top := this.ua.user.Up / 2 //计算上限
+			top := this.ua.user.Up //计算上限
 			if top > cfg.Maxearn {
 				top = cfg.Maxearn
 			}
 
-			rub = -UpLimit(base*mul*this.mul.U1, this.ub.user.Up, top)
-			ruc = -UpLimit(base*mul*this.mul.U1, this.uc.user.Up, top)
-			rua = 0 - rub - rua
+			rub = -UpLimit(base*this.mul.U2, this.ub.user.Up, top)
+			ruc = -UpLimit(base*this.mul.U3, this.uc.user.Up, top)
+			rua = 0 - rub - ruc
 
-			this.ua.user.Cw += 1
+			this.ua.user.Cw++
 			this.ub.user.Cw = 0
 			this.uc.user.Cw = 0
 
 		case 2:
-			top := this.ub.user.Up / 2 //计算上限
+			//top := this.ub.user.Up / 2 //计算上限
+			top := this.ub.user.Up //计算上限
 			if top > cfg.Maxearn {
 				top = cfg.Maxearn
 			}
 
-			rua = -UpLimit(base*mul*this.mul.U2, this.ua.user.Up, top)
-			ruc = -UpLimit(base*mul*this.mul.U2, this.uc.user.Up, top)
+			rua = -UpLimit(base*this.mul.U1, this.ua.user.Up, top)
+			ruc = -UpLimit(base*this.mul.U3, this.uc.user.Up, top)
 			rub = 0 - ruc - rua
 
 			this.ua.user.Cw = 0
-			this.ub.user.Cw += 1
+			this.ub.user.Cw++
 			this.uc.user.Cw = 0
 
 		case 3:
-			top := this.uc.user.Up / 2 //计算上限
+			//top := this.uc.user.Up / 2 //计算上限
+			top := this.uc.user.Up //计算上限
 			if top > cfg.Maxearn {
 				top = cfg.Maxearn
 			}
-			rua = -UpLimit(base*mul*this.mul.U3, this.ua.user.Up, top)
-			rub = -UpLimit(base*mul*this.mul.U3, this.ub.user.Up, top)
+			rua = -UpLimit(base*this.mul.U1, this.ua.user.Up, top)
+			rub = -UpLimit(base*this.mul.U2, this.ub.user.Up, top)
 			ruc = 0 - rub - rua
 
 			this.ua.user.Cw = 0
 			this.ub.user.Cw = 0
-			this.uc.user.Cw += 1
+			this.uc.user.Cw++
 		}
 	} else { //地主负 农民胜
 		//
 		switch this.landlord {
 		case 1:
 			top := this.ua.user.Up //计算赔付上限
-			if top > cfg.Maxearn*2 {
+			if top > cfg.Maxearn {
 				top = cfg.Maxearn
 			}
 			//
-			v := base*mul*this.mul.U2 + base*mul*this.mul.U3
-			losttop := UpLimit(v, this.ub.user.Up+this.uc.user.Up, top)
+			v := base*this.mul.U2 + base*this.mul.U3                    //理论赔付额
+			losttop := UpLimit(v, this.ub.user.Up+this.uc.user.Up, top) //实际赔付额
 
-			if v > losttop { //赔付额不足 平分//按各自倍数比例分配
-				rub = losttop / 2 //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
-				ruc = losttop - ruc
+			if v > losttop { //赔付额不足 按各自倍数比例分配
+				rub = int(math.Floor(float64(losttop) * (float64(this.mul.U2) / float64(this.mul.U2+this.mul.U3)))) //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
+				ruc = losttop - rub
 			} else {
-				rub = UpLimit(base*mul*this.mul.U2, this.ub.user.Up, losttop)
-				ruc = UpLimit(base*mul*this.mul.U3, this.uc.user.Up, losttop)
+				rub = UpLimit(base*this.mul.U2, this.ub.user.Up, losttop)
+				ruc = losttop - rub //UpLimit(base*this.mul.U3, this.uc.user.Up, losttop)
 			}
 			rua = 0 - rub - ruc
 
 			this.ua.user.Cw = 0
-			this.ub.user.Cw += 1
-			this.uc.user.Cw += 1
+			this.ub.user.Cw++
+			this.uc.user.Cw++
 
 		case 2:
 			top := this.ub.user.Up //计算赔付上限
-			if top > cfg.Maxearn*2 {
+			if top > cfg.Maxearn {
 				top = cfg.Maxearn
 			}
 			//
-			v := base*mul*this.mul.U1 + base*mul*this.mul.U3
+			v := base*this.mul.U1 + base*this.mul.U3
 			losttop := UpLimit(v, this.ua.user.Up+this.uc.user.Up, top)
 
 			if v > losttop { //赔付额不足 平分//按各自倍数比例分配
-				rua = losttop / 2 //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
-				ruc = losttop - ruc
+				rua = int(math.Floor(float64(losttop) * (float64(this.mul.U1) / float64(this.mul.U1+this.mul.U3)))) //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
+				ruc = losttop - rua
 			} else {
-				rua = UpLimit(base*mul*this.mul.U1, this.ua.user.Up, losttop)
-				ruc = UpLimit(base*mul*this.mul.U3, this.uc.user.Up, losttop)
+				rua = UpLimit(base*this.mul.U1, this.ua.user.Up, losttop)
+				ruc = losttop - rua //UpLimit(base*this.mul.U3, this.uc.user.Up, losttop)
 			}
 			rub = 0 - rua - ruc
 
-			this.ua.user.Cw += 1
+			this.ua.user.Cw++
 			this.ub.user.Cw = 0
-			this.uc.user.Cw += 1
+			this.uc.user.Cw++
 
 		case 3:
 			top := this.uc.user.Up //计算赔付上限
-			if top > cfg.Maxearn*2 {
+			if top > cfg.Maxearn {
 				top = cfg.Maxearn
 			}
 			//
-			v := base*mul*this.mul.U1 + base*mul*this.mul.U2
+			v := base*this.mul.U1 + base*this.mul.U2
 			losttop := UpLimit(v, this.ua.user.Up+this.ub.user.Up, top)
 
 			if v > losttop { //赔付额不足 平分//按各自倍数比例分配
-				rua = losttop / 2 //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
-				rub = losttop - ruc
+				rua = int(math.Floor(float64(losttop) * (float64(this.mul.U1) / float64(this.mul.U2+this.mul.U1)))) //* ((mul*this.mul.U2) /(mul*this.mul.U2 * this.mul.U3 )) )
+				rub = losttop - rua
 			} else {
-				rua = UpLimit(base*mul*this.mul.U1, this.ua.user.Up, losttop)
-				rub = UpLimit(base*mul*this.mul.U2, this.ub.user.Up, losttop)
+				rua = UpLimit(base*this.mul.U1, this.ua.user.Up, losttop)
+				rub = losttop - rua //UpLimit(base*this.mul.U2, this.ub.user.Up, losttop)
 			}
 			ruc = 0 - rua - rub
 
-			this.ua.user.Cw += 1
-			this.ub.user.Cw += 1
+			this.ua.user.Cw++
+			this.ub.user.Cw++
 			this.uc.user.Cw = 0
 		}
 	}
@@ -1020,18 +1010,19 @@ func (this *Room) Settlement(pos int) {
 	this.uc.user.Up += ruc
 
 	//胜利次数
-	winner.user.Wn += 1
+	winner.user.Wn++
 
 	//对局次数
-	this.ua.user.Ct += 1
-	this.ub.user.Ct += 1
-	this.uc.user.Ct += 1
+	this.ua.user.Ct++
+	this.ub.user.Ct++
+	this.uc.user.Ct++
 
 	//更新数据库
 	//更新ua
 	bm := make(map[string]interface{})
 	bm["up"] = this.ua.user.Up
 	bm["ct"] = this.ua.user.Ct
+	bm["cw"] = this.ua.user.Cw
 	bm["wn"] = this.ua.user.Wn
 
 	err := model.UpdateUser(this.ua.user.ObjectId, bm)
@@ -1041,6 +1032,7 @@ func (this *Room) Settlement(pos int) {
 	//更新ub
 	bm["up"] = this.ub.user.Up
 	bm["ct"] = this.ub.user.Ct
+	bm["cw"] = this.ub.user.Cw
 	bm["wn"] = this.ub.user.Wn
 
 	err = model.UpdateUser(this.ub.user.ObjectId, bm)
@@ -1050,6 +1042,7 @@ func (this *Room) Settlement(pos int) {
 	//更新uc
 	bm["up"] = this.uc.user.Up
 	bm["ct"] = this.uc.user.Ct
+	bm["cw"] = this.uc.user.Cw
 	bm["wn"] = this.uc.user.Wn
 
 	err = model.UpdateUser(this.uc.user.ObjectId, bm)
@@ -1085,6 +1078,10 @@ func (this *Room) Settlement(pos int) {
 func (this *Room) LeaveRoom(pos int) {
 	//{"id":1022,"msg":"send_LeaveHome","data":{}}
 	//LeaveHome: {recvId: 2022, msg: "recv_LeaveHome"}
+
+	this.ua.isvcstart = false
+	this.ub.isvcstart = false
+	this.uc.isvcstart = false
 
 	if this.isplaying {
 		this.Escape(pos)
@@ -1131,6 +1128,8 @@ func (this *Room) Escape(pos int) {
 
 	switch pos {
 	case 1:
+		this.ua.LeaveRoom()
+
 		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":1,"escape":"%s","ticket":%d}}`, name, ticket)
 		this.ub.user.Up += ticket
 		this.ub.send <- []byte(res)
@@ -1138,6 +1137,8 @@ func (this *Room) Escape(pos int) {
 		this.uc.user.Up += ticket
 		this.uc.send <- []byte(res)
 	case 2:
+		this.ub.LeaveRoom()
+
 		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":2,"escape":"%s","ticket":%d}}`, name, ticket)
 		this.ua.user.Up += ticket
 		this.ua.send <- []byte(res)
@@ -1145,6 +1146,8 @@ func (this *Room) Escape(pos int) {
 		this.uc.user.Up += ticket
 		this.uc.send <- []byte(res)
 	case 3:
+		this.uc.LeaveRoom()
+
 		res = fmt.Sprintf(`{"order":2043,"code":"0","data":{"user":1,"escape":"%s","ticket":%d}}`, name, ticket)
 		this.ua.user.Up += ticket
 		this.ua.send <- []byte(res)
@@ -1164,14 +1167,15 @@ func (this *Room) Escape(pos int) {
 		logs.Error("gameover update db error 3:%s", err.Error())
 	}
 
-	this.ua.room = nil
-	this.ub.room = nil
-	this.uc.room = nil
+	// this.ua.room = nil
+	// this.ub.room = nil
+	// this.uc.room = nil
 
-	this.ua = nil
-	this.ub = nil
-	this.uc = nil
+	// this.ua = nil
+	// this.ub = nil
+	// this.uc = nil
 	//结束对局
+
 	onlinenum[this.roomtype] -= 3
 	this.stop <- 1
 }
@@ -1267,51 +1271,30 @@ func (this *Room) ResetRoom() {
 	// 	this.waittimer.Stop()
 	// }
 
-	this.ua.room = nil
-	this.ub.room = nil
-	this.uc.room = nil
+	this.ua.isvcstart = false
+	this.ub.isvcstart = false
+	this.uc.isvcstart = false
 
-	this.ua = nil
-	this.ub = nil
-	this.uc = nil
+	//this.Reset()
 
 	onlinenum[this.roomtype] -= 3
 	this.stop <- 1
-
-	// this.ua = nil
-	// this.ub = nil
-	// this.uc = nil
-
-	// this.roomtype = 0
-	// this.verifycount = 0
-
-	// this.propos = 0
-
-	// this.landlord = 0
-	// this.spring = 0
-
-	// this.ua.iscall = -1
-	// this.ub.iscall = -1
-	// this.uc.iscall = -1
-
-	// this.ua.utype = 0
-	// this.ub.utype = 0
-	// this.uc.utype = 0
-
-	// this.ua.isvcstart = false
-	// this.ub.isvcstart = false
-	// this.uc.isvcstart = false
-
-	// this.mulstate = 0
-	// this.mul.Rest()
-
-	// this.nextplayer = 0
-	// this.waittimer.Stop()
 }
 
 func (this *Room) Reset() {
 
-	this.roomtype = 0
+	/*
+		roomid   string     //roomid
+		rmsg     chan Relay //通过Player中继过来的消息,有些消息在Player里处理，有些需要在Room中处理
+
+		backcards [3]int    //底牌
+		precards  []int     //上一个人出的牌
+
+		stop      chan byte //关闭信号
+		waittimer  *time.Timer //等待下个说话玩家的计时器
+		**/
+
+	//this.roomtype = 0
 	this.verifycount = 0
 
 	this.propos = 0
@@ -1327,9 +1310,9 @@ func (this *Room) Reset() {
 	this.ub.utype = 0
 	this.uc.utype = 0
 
-	this.ua.isvcstart = false
-	this.ub.isvcstart = false
-	this.uc.isvcstart = false
+	// this.ua.isvcstart = false
+	// this.ub.isvcstart = false
+	// this.uc.isvcstart = false
 
 	this.mulstate = 0
 	this.mul.Rest()
@@ -1340,7 +1323,20 @@ func (this *Room) Reset() {
 
 	this.firstmingpai = 0
 
+	//this.backcards = nil //底牌
+	this.precards = nil //上一个人出的牌
+
 	//this.waittimer.Stop()
+}
+
+func (this *Room) CloseRoom() {
+	this.ua.room = nil
+	this.ub.room = nil
+	this.uc.room = nil
+
+	this.ua = nil
+	this.ub = nil
+	this.uc = nil
 }
 
 //计算底牌倍数

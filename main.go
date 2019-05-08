@@ -29,6 +29,10 @@ func main() {
 	logs.SetLogFile("uulandlord")
 	defer logs.CloseFile()
 
+	//测试区--------------------------
+
+	//--------------------------
+
 	//go web.Start()
 	server.Start()
 }

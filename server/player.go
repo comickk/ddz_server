@@ -75,8 +75,8 @@ func (this *Player) readPump() {
 				}
 				break
 			}
-			fmt.Print("接收到消息  <--- ") //显示原始数据
-			fmt.Println(string(message))
+			//fmt.Print("接收到消息  <--- ") //显示原始数据
+			//fmt.Println(string(message))
 
 			var pk Packet
 			err = json.Unmarshal(message, &pk)
@@ -107,6 +107,17 @@ func (this *Player) readPump() {
 			case 1010: //GetSysCfg: {sendId: 1010, msg: "send_GetSysCfg"},// 获取系统配置
 				this.RoomCfg()
 
+			case 1002:
+				//{name: strNam, img: roleId}
+				if data, ok := pk.Data.(map[string]interface{}); ok {
+					if img, ok1 := data["img"].(float64); ok1 {
+						if name, ok2 := data["name"].(string); ok2 {
+
+							this.SeNameAndHead(name, (int)(img))
+						}
+					}
+				}
+
 			case 1011: //UpdateDeskPeople: {sendId: 1011, msg: "send_UpdateDeskPeople"},// 获取场次人数
 				this.UpdateDeskPeople()
 
@@ -115,7 +126,10 @@ func (this *Player) readPump() {
 				this.EnterRoom()
 
 			case 1050: //GetShopListInfo: {sendId: 1050, msg: "send_GetShopListInfo"},// 获取商品列表
-				this.GoodsList()
+				//data: 1  豆    2   钻石
+				if v, ok := pk.Data.(float64); ok {
+					this.GoodsList((int)(v))
+				}
 
 			case 1051: //{"id":1051,"msg":"send_PayShop","data":{"id":"11","platform":3}}
 				if data, ok := pk.Data.(map[string]interface{}); ok {
@@ -149,7 +163,7 @@ func (this *Player) readPump() {
 
 							id, err := strconv.Atoi(room)
 							if err != nil {
-								fmt.Println("string to in  error")
+								//fmt.Println("string to in  error")
 							}
 							this.BeginGame((int)(vc), (int)(id))
 						}
@@ -160,7 +174,7 @@ func (this *Player) readPump() {
 				//LeaveHome: {sendId: 1022, msg: "send_LeaveHome"},// 离开房间
 				//this.LeaveRoom()
 				if this.user == nil || this.room == nil {
-					fmt.Println("将消息转入房间时失败")
+					//fmt.Println("将消息转入房间时失败")
 					this.LeaveRoom()
 				} else {
 					rmsg := Relay{pos: this.pos, msg: pk}
@@ -172,10 +186,20 @@ func (this *Player) readPump() {
 			case 1037: //ChangeDesk: {sendId: 1037, msg: "send_ChangeDesk"},// 换桌
 				this.ChangeDesk()
 
+			case 1007: //切换场景   SetGameScene: {sendId: 1007, msg: "send_SetGameScene"},//
+				var sid int
+				v, ok := pk.Data.(float64)
+				if ok {
+					sid = (int)(v)
+					this.SetGameScene(sid)
+				} else {
+					continue
+				}
+
 			//其余消息上传给房间
 			default:
 				if this.user == nil || this.room == nil {
-					fmt.Println("将消息转入房间时失败")
+					//fmt.Println("将消息转入房间时失败")
 					//ret := fmt.Sprintf(`{"cmd":"%s","err":"request sequence error"}`, cmd)
 					//this.send <- []byte(ret)
 				} else {
@@ -214,8 +238,8 @@ func (this *Player) writePump() {
 				if err != nil {
 					return
 				}
-				fmt.Print("输出消息  ---> ") //显示原始数据
-				fmt.Println(string(message))
+				//fmt.Print("输出消息  ---> ") //显示原始数据
+				//fmt.Println(string(message))
 				w.Write(message)
 
 				if err := w.Close(); err != nil {
@@ -251,15 +275,13 @@ func (this *Player) loginHandle(unionid string) {
 	var err error
 	var has bool
 
-	var code string
+	code := 0
 	u, has = model.GetUser(unionid) //1 从游戏用户表中查找 userid
 
 	msg := make(map[string]interface{})
 	res := make(map[string]interface{})
 	if err != nil {
-		code = err.Error()
-	} else {
-		code = "0"
+		code = 9015
 	}
 
 	//AnonymityLogin:{recvId:4001,msg:"recv_AnonymityLogin"},// 匿名登录
@@ -285,11 +307,14 @@ func (this *Player) loginHandle(unionid string) {
 		msg["data"] = res
 
 	} else { //3 未找到,从 app  user 表中查询
-		var bu *model.User
-		bu, has = model.GetBaseUser(unionid)
+		//var bu *model.User
+		//bu, has = model.GetBaseUser(unionid)
 
-		if !has { //4 未找到返回错误
-			code = "1" //用户不存在
+		username := model.GetBaseUser(unionid)
+
+		fmt.Printf("-----------------------  %s    \n", username)
+		if username == "" { //4 未找到返回错误
+			code = 9015 //用户不存在
 
 		} else { //5 找到 则将数据添加进游戏表中并返回
 			provice := ""
@@ -298,8 +323,8 @@ func (this *Player) loginHandle(unionid string) {
 			country := "中国"
 			headimgurl := ""
 
-			u, err = model.NewUser(bu.Username, provice, city, country,
-				headimgurl, bu.Id, sex)
+			u, err = model.NewUser(username, provice, city, country,
+				headimgurl, unionid, sex)
 			this.user = u
 
 			res["name"] = u.Nickname
@@ -362,6 +387,35 @@ func (this *Player) RoomCfg() {
 	this.send <- data
 }
 
+//设置用户昵称和虚拟形象
+func (this *Player) SeNameAndHead(name string, roleid int) {
+	//SetNameAndHead: {sendId: 1002, msg: "send_SetNameAndHead"},// 设置用户昵称形象
+	//SetNameAndHead: {recvId: 2002, msg: "recv_SetNameAndHead"},// 设置用户昵称形象
+
+	//设置昵称和   形象id
+
+	code := 0
+
+	this.user.Nickname = name
+	this.user.Img = roleid
+
+	bm := make(map[string]interface{})
+	bm["nickname"] = name
+	bm["img"] = roleid
+
+	err := model.UpdateUser(this.user.ObjectId, bm)
+	if err != nil {
+		logs.Error("set name and head update db error :%s", err.Error())
+		code = 1
+	}
+
+	if code == 0 {
+		//
+		res := `{"order":"2002","code":0,"data":""}`
+		this.send <- []byte(res)
+	}
+}
+
 //获取排行榜
 func (this *Player) RankInfo() {
 
@@ -375,14 +429,20 @@ func (this *Player) RankInfo() {
 	//--------------
 	// //   名字 |  胜局  | 连胜  |  3   |  4  | 头像
 	// //获取前20名排名
-	rank, err := model.GetRank(1)
-	if err != nil {
-		res["err"] = err.Error()
+	if model.Uprank == nil {
+		e := model.GetRank(1)
+		res["err"] = e.Error()
 	}
+
+	if model.Udrank == nil {
+		e := model.GetRank(1)
+		res["err"] = e.Error()
+	}
+
 	// res["ranking"] = rank
 	//res["gold"] = []string{"t1|10|5|100|11|1000000|222", "t1|10|5|100|11|1000000|222"}
-	res["gold"] = rank
-	res["ud"] = []string{"t1|10|5|100|11|1000000|222", "t1|10|5|100|11|1000000|222"}
+	res["gold"] = model.Uprank
+	res["ud"] = model.Udrank //[]string{"t1|10|5|100|11|1000000|222", "t1|10|5|100|11|1000000|222"}
 
 	msg["data"] = res
 	//--------------
@@ -395,7 +455,7 @@ func (this *Player) RankInfo() {
 }
 
 //获取商品列表
-func (this *Player) GoodsList() {
+func (this *Player) GoodsList(goodtype int) {
 
 	msg := make(map[string]interface{})
 
@@ -414,7 +474,7 @@ func (this *Player) GoodsList() {
 	// 	"51|100|100|1|11",
 	// 	"52|100|100|1|11"}
 
-	res["list"], _ = model.GetGoodList()
+	res["list"], _ = model.GetGoodList(goodtype)
 
 	msg["data"] = res
 	//--------------
@@ -468,7 +528,7 @@ func (this *Player) BeginGame(vc, id int) {
 	this.queue = playerquenes[id]
 	this.queue.Put(this.user.ObjectId, this) //将该玩家加入匹配队列
 	//matchqueue.Put(this.user.ObjectId, this) //将该玩家加入匹配队列
-	fmt.Printf("当前队列人数:  %d  \n", this.queue.Len())
+	//fmt.Printf("当前队列人数:  %d  \n", this.queue.Len())
 
 	//是否明牌开始
 	if vc > 0 {
@@ -595,7 +655,7 @@ func (this *Player) Bankrupt(id int) {
 	t, err := time.Parse("2006-01-02 15:04:05", this.user.Lastsubsidy.Format("2006-01-02 15:04:05"))
 
 	if err != nil {
-		fmt.Println(err)
+		//fmt.Println(err)
 	} else {
 		d := time.Now().Sub(t)
 		if d.Hours() > 24 {
@@ -639,13 +699,86 @@ func (this *Player) Bankrupt(id int) {
 func (this *Player) PayShop(id string) {
 	//返回订单号 和 商品id
 	// PayShop: {recvId: 2051, msg: "recv_PayShop"},// 购买商品
+	//PaySuccess: {recvId: 2052, msg: "recv_PaySuccess"},// 支付成功
+
+	//data:{type    up   getup    ud    getud   }
+
+	goodid, err := strconv.Atoi(id)
+
+	code := 0
+	gt := 1 // 货物类型  1 豆  2 钻
+	if goodid > 20 {
+		gt = 2
+	}
+
+	//修改数据,生成订单-----
+	r, _ := model.NewRecord(goodid, this.user.Unionid)
+
+	if r != nil { //成功生成订单后,修改数据
+		bm := make(map[string]interface{})
+		if gt == 1 {
+			if this.user.Ud >= r.Price/100 { //扣除 钻石  添加金豆
+				this.user.Ud -= (r.Price / 100)
+				this.user.Up += r.Num
+
+				bm["up"] = this.user.Up
+				bm["ud"] = this.user.Ud
+
+				err := model.UpdateUser(this.user.ObjectId, bm)
+				if err != nil {
+					logs.Error("exchagne update db error:%s", err.Error())
+					code = 1
+				}
+
+			} else {
+				//返回错误
+				logs.Error("user  %s  ud  %d is not enongh!  %d \n", this.user.ObjectId, this.user.Ud, (r.Price / 100))
+				errdata := `{"order":"","code":9014,"data":""}`
+				this.send <- []byte(errdata)
+				return
+			}
+
+		} else {
+			//扣除 用户对应的虚拟币
+
+			//--------------------
+			this.user.Ud += r.Num
+			bm["ud"] = this.user.Ud
+
+			err := model.UpdateUser(this.user.ObjectId, bm)
+			if err != nil {
+				logs.Error("exchagne update db error:%s", err.Error())
+				code = 1
+			}
+		}
+
+	} else {
+		//返回失败错误
+		logs.Error("record order  created  failed! \n")
+		errdata := `{"order":"","code":9014,"data":""}`
+		this.send <- []byte(errdata)
+		return
+	}
+
+	//----------------------
+
+	//返回数据
 	msg := make(map[string]interface{})
-	msg["order"] = 2051
-	msg["code"] = 0
+	msg["order"] = 2052
+	msg["code"] = code
 
 	res := make(map[string]interface{})
-	res["id"] = id
-	res["no"] = 100000 //模拟一个订单号
+	// res["id"] = id
+	// res["no"] = 100000 //模拟一个订单号
+	res["type"] = gt
+	if gt == 1 { //修改豆数
+		res["up"] = this.user.Up
+		res["ud"] = this.user.Ud
+		res["getup"] = r.Num
+	} else { //修改钻数
+		res["ud"] = this.user.Ud
+		res["getud"] = r.Num
+	}
 
 	msg["data"] = res
 
@@ -680,14 +813,42 @@ func (this *Player) RankingByUp() {
 
 // }
 
+func (this *Player) SetGameScene(id int) {
+
+	msg := make(map[string]interface{})
+	res := make(map[string]interface{})
+	msg["order"] = "2007"
+	code := "0"
+
+	// bm := make(map[string]interface{})
+	// bm["img"] = img
+	// err := model.UpdateUser(this.user.ObjectId, bm)
+	// if err != nil {
+	// 	logs.Error("update db error:%s", err.Error())
+	// 	code = "1"
+	// }
+	res["scene"] = id                 //选中的场景
+	res["costup"] = 0                 // 花费的金币
+	res["up"] = this.user.Up          // 最新的金币
+	res["scenes"] = []int{3001, 3002} // 用户已经购买的所有场景
+
+	msg["data"] = res
+	msg["code"] = code
+	data, err := json.Marshal(&msg)
+	if err != nil {
+		logs.Error("json marshal error:%s", err.Error())
+	}
+	this.send <- data
+}
+
 func (this *Player) Close() {
 	if this.user != nil {
 		//向服务器发送 断开消息
-		fmt.Printf("========  player [ %s ] is close conn ...   ========\n", this.user.Nickname)
+		//fmt.Printf("========  player [ %s ] is close conn ...   ========\n", this.user.Nickname)
 		if this.room != nil { //转发房间  有人退出
 			this.room.Escape(this.pos)
 		}
 	} else {
-		fmt.Printf("========  player is close conn ...   ========\n")
+		//fmt.Printf("========  player is close conn ...   ========\n")
 	}
 }

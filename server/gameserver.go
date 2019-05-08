@@ -15,6 +15,8 @@ var onlinenum map[int]int
 
 var playerquenes map[int]*PlayerQueue
 
+var ranktimer *time.Timer //排行更新定时器
+
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if _, ok := err.(websocket.HandshakeError); ok {
@@ -59,6 +61,12 @@ func matching(id int, queue *PlayerQueue) {
 	}
 }
 
+func UpdateRank() {
+
+	_ = model.GetRank(1)
+	_ = model.GetRank(2)
+}
+
 //Start
 func Start() {
 
@@ -74,6 +82,13 @@ func Start() {
 	} else {
 		fmt.Println("init room cfg filed")
 	}
+
+	//初始化排行榜
+	UpdateRank()
+	// _ = model.GetRank(1)
+	// _ = model.GetRank(2)
+
+	ranktimer = time.AfterFunc(time.Second*7200, UpdateRank)
 
 	//建立匹配队列
 	for i, k := range playerquenes {
@@ -107,11 +122,13 @@ func Start() {
 	// }()
 
 	//建立网络
-	logs.Info("server start, listen 192.168.0.126:8765/")
+	logs.Info("server start, listen localhost:8765/")
 	fmt.Println("Server server start ...")
 
 	http.HandleFunc("/", wsHandler)
-	err := http.ListenAndServe("192.168.0.126:8765", nil)
+	//err := http.ListenAndServe("192.168.0.126:8765", nil)
+	//172.17.173.87 服务器内网ip
+	err := http.ListenAndServe("127.0.0.1:8765", nil)
 	if err != nil {
 		logs.Error("start server error:%s", err.Error())
 	}
